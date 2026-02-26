@@ -1,8 +1,13 @@
-# TG Pansou Bot - 网盘搜索 Telegram Bot
+# TG Pansou Bot 🤖
+
+[![Version](https://img.shields.io/badge/Version-1.0.0-blue.svg)](https://github.com/Tumblr-code/tg-pansou-bot/releases)
+[![Python](https://img.shields.io/badge/Python-3.11-green.svg)](https://www.python.org/)
+[![Docker](https://img.shields.io/badge/Docker-supported-blue.svg)](https://www.docker.com/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 一个基于 [pansou](https://github.com/fish2018/pansou) API 的 Telegram Bot，支持搜索各种网盘资源。
 
-## 功能特性
+## ✨ 功能特性
 
 - 🔍 **智能搜索**: 支持关键词搜索网盘资源
 - 💬 **私聊支持**: 私聊直接发送关键词即可搜索
@@ -10,8 +15,9 @@
 - 📁 **多网盘**: 支持百度、阿里、夸克、天翼、UC、115、PikPak 等
 - 🔄 **快捷操作**: 支持刷新结果、筛选网盘类型
 - ⚡ **快速响应**: 异步处理，快速返回结果
+- 🐳 **Docker 部署**: 一键 Docker 部署，简单方便
 
-## 支持的网盘
+## 📋 支持的网盘
 
 | 网盘 | 类型标识 |
 |------|----------|
@@ -28,152 +34,252 @@
 | 磁力链接 | magnet |
 | 电驴链接 | ed2k |
 
-## 快速开始
+## 🚀 快速开始
 
-### 1. 获取 Telegram Bot Token
+### 方法一：Docker 部署（推荐）
 
-1. 在 Telegram 中找到 [@BotFather](https://t.me/BotFather)
-2. 发送 `/newbot` 创建新 Bot
-3. 按照提示设置 Bot 名称和用户名
-4. 获取 Bot Token（格式：`123456789:ABCdefGHIjklMNOpqrsTUVwxyz`）
-
-### 2. 部署 Pansou API 服务
-
-确保你有可用的 pansou API 服务：
+#### 1. 克隆项目
 
 ```bash
-# 使用 Docker 部署 pansou
-docker run -d --name pansou -p 8888:8888 ghcr.io/fish2018/pansou:latest
-```
-
-### 3. 部署 Bot
-
-#### 方式一：Docker Compose（推荐）
-
-```bash
-# 1. 克隆项目
-git clone <your-repo>
+git clone https://github.com/Tumblr-code/tg-pansou-bot.git
 cd tg-pansou-bot
-
-# 2. 配置环境变量
-cp .env.example .env
-# 编辑 .env 文件，填入你的 Bot Token 和 pansou API 地址
-
-# 3. 启动服务
-docker-compose up -d
 ```
 
-#### 方式二：直接运行
+#### 2. 配置环境变量
 
 ```bash
-# 1. 安装依赖
-pip install -r requirements.txt
-
-# 2. 配置环境变量
 cp .env.example .env
-# 编辑 .env 文件
-
-# 3. 运行
-python main.py
+nano .env
 ```
-
-## 配置说明
 
 编辑 `.env` 文件：
 
 ```env
-# 必需配置
+# Telegram Bot Token（从 @BotFather 获取）
 TG_BOT_TOKEN=your_bot_token_here
+
+# Pansou API 地址
 PANSOU_API_URL=http://localhost:8888
 
-# 可选配置
-PANSOU_API_TOKEN=          # 如果 pansou 启用了认证
-HTTP_PROXY=                # HTTP 代理地址
-HTTPS_PROXY=               # HTTPS 代理地址
-DEFAULT_RESULT_LIMIT=10    # 默认返回结果数
-MAX_RESULT_LIMIT=20        # 最大返回结果数
-LOG_LEVEL=INFO             # 日志级别
+# Pansou API 认证 Token（可选）
+PANSOU_API_TOKEN=
+
+# 搜索配置
+DEFAULT_RESULT_LIMIT=10
+MAX_RESULT_LIMIT=20
+SEARCH_TIMEOUT=30
 ```
 
-## 使用方式
+#### 3. 启动服务
+
+```bash
+docker-compose up -d
+```
+
+### 方法二：本地部署
+
+#### 1. 克隆项目
+
+```bash
+git clone https://github.com/Tumblr-code/tg-pansou-bot.git
+cd tg-pansou-bot
+```
+
+#### 2. 创建虚拟环境
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+#### 3. 安装依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+#### 4. 配置环境变量
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+#### 5. 运行 Bot
+
+```bash
+python main.py
+```
+
+## 🔧 配置说明
+
+### 获取 Telegram Bot Token
+
+1. 在 Telegram 中搜索 @BotFather
+2. 发送 `/newbot` 创建新 Bot
+3. 按提示设置 Bot 名称和用户名
+4. 复制获得的 Token 到 `.env` 文件
+
+### Pansou API 部署
+
+本 Bot 依赖 pansou 服务，需要先部署 pansou：
+
+```bash
+docker run -d -p 8888:8888 --name pansou ghcr.io/fish2018/pansou:latest
+```
+
+或者使用 docker-compose：
+
+```yaml
+version: '3.8'
+services:
+  pansou:
+    image: ghcr.io/fish2018/pansou:latest
+    container_name: pansou
+    ports:
+      - "8888:8888"
+    restart: unless-stopped
+```
+
+### 网络配置
+
+如果使用 Docker Compose 同时部署 pansou 和 bot：
+
+```yaml
+version: '3.8'
+services:
+  pansou:
+    image: ghcr.io/fish2018/pansou:latest
+    container_name: pansou
+    ports:
+      - "8888:8888"
+    restart: unless-stopped
+    
+  tg-pansou-bot:
+    build: .
+    container_name: tg-pansou-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PANSOU_API_URL=http://pansou:8888
+    depends_on:
+      - pansou
+```
+
+## 📖 使用教程
 
 ### 私聊使用
 
 1. 在 Telegram 中搜索你的 Bot 用户名
-2. 直接发送搜索关键词，如：`复仇者联盟`
-3. Bot 会返回搜索结果
+2. 点击 "Start" 或发送 `/start`
+3. 直接发送要搜索的关键词，如：`复仇者联盟`
+4. Bot 会返回搜索结果，点击链接即可查看
 
 ### 群组使用
 
 1. 将 Bot 添加到群组
-2. 使用命令搜索：
-   - `/search 关键词`
-   - `/search@YourBotName 关键词`
+2. 授予 Bot 发送消息的权限
+3. 使用 `/search 关键词` 命令搜索，如：`/search 复仇者联盟`
 
 ### 可用命令
 
 | 命令 | 说明 |
 |------|------|
-| `/start` | 开始使用，显示欢迎信息 |
+| `/start` | 开始使用 |
 | `/help` | 显示帮助信息 |
-| `/search <关键词>` | 搜索网盘资源 |
-| `/status` | 检查服务状态 |
+| `/search <关键词>` | 搜索资源（群组中必须使用） |
 
-## 示例
+## 🐳 Docker 管理
 
+### 查看日志
+
+```bash
+docker logs -f tg-pansou-bot
 ```
-/search 复仇者联盟
-/search 三体 有声书
-/search Python教程
+
+### 重启服务
+
+```bash
+docker-compose restart
 ```
 
-## 项目结构
+### 停止服务
+
+```bash
+docker-compose down
+```
+
+### 更新镜像
+
+```bash
+docker-compose pull
+docker-compose up -d
+```
+
+## 🔍 故障排查
+
+### Bot 无响应
+
+1. 检查日志：`docker logs tg-pansou-bot`
+2. 确认 Token 正确
+3. 检查网络连接
+4. 确认 pansou 服务正常运行
+
+### 搜索结果为空
+
+1. 检查 pansou API 是否可访问
+2. 确认搜索关键词有效
+3. 查看 pansou 服务日志
+
+### 网络超时
+
+1. 检查服务器网络连接
+2. 确认没有防火墙阻挡
+3. 尝试重启服务
+
+## 📁 项目结构
 
 ```
 tg-pansou-bot/
-├── main.py              # 入口文件
+├── main.py              # 主程序入口
+├── run_bot.py           # Bot 运行脚本
 ├── requirements.txt     # Python 依赖
-├── Dockerfile          # Docker 构建文件
-├── docker-compose.yml  # Docker Compose 配置
-├── .env.example        # 环境变量示例
-├── README.md           # 说明文档
-└── src/
-    ├── bot.py          # Bot 主逻辑
-    ├── pansou_client.py # Pansou API 客户端
-    └── config.py       # 配置管理
+├── Dockerfile           # Docker 构建文件
+├── docker-compose.yml   # Docker Compose 配置
+├── .env.example         # 环境变量示例
+├── .gitignore           # Git 忽略文件
+├── start.sh             # 启动脚本
+├── README.md            # 项目说明
+├── data/                # 数据目录
+└── src/                 # 源代码目录
+    └── bot/
+        ├── __init__.py
+        ├── handlers.py    # 消息处理器
+        └── utils.py       # 工具函数
 ```
 
-## 注意事项
+## 🛠️ 技术栈
 
-1. **资源合法性**: 搜索结果来自公开渠道，请自行判断资源的合法性和安全性
-2. **提取码**: 部分链接可能需要提取码，结果中会显示
-3. **时效性**: 网盘链接可能有时效性，过期链接无法访问
-4. **速率限制**: 默认每分钟限制 10 次请求，可在配置中调整
+- **Python 3.11**: 主要编程语言
+- **python-telegram-bot**: Telegram Bot 框架
+- **httpx**: 异步 HTTP 客户端
+- **pydantic**: 数据验证
+- **Docker**: 容器化部署
 
-## 常见问题
+## 🤝 贡献指南
 
-### Q: 搜索无结果？
-A: 尝试更换关键词，或使用更简单的词语搜索
+欢迎提交 Issue 和 Pull Request！
 
-### Q: Bot 无响应？
-A: 使用 `/status` 命令检查服务状态，确认 pansou API 是否正常
+## 📄 许可证
 
-### Q: 如何设置代理？
-A: 在 `.env` 文件中设置 `HTTP_PROXY` 和 `HTTPS_PROXY`
+本项目基于 MIT 许可证开源。
 
-## 更新日志
-
-### v1.0.0
-- ✅ 基础搜索功能
-- ✅ 私聊和群组支持
-- ✅ 多网盘类型识别
-- ✅ Docker 部署
-
-## License
-
-MIT License
-
-## 致谢
+## 🙏 致谢
 
 - [pansou](https://github.com/fish2018/pansou) - 网盘搜索 API
-- [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) - Telegram Bot 库
+- [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) - Telegram Bot 框架
+
+---
+
+**维护者**: [Tumblr-code](https://github.com/Tumblr-code)
