@@ -64,12 +64,12 @@ class PansouClient:
         if proxies:
             proxy = proxies.get('https://') or proxies.get('http://')
         
-        # 优化超时设置：连接5秒，读取15秒
+        # 优化超时设置：连接10秒，读取45秒
         timeout = httpx.Timeout(
-            connect=5.0,
-            read=15.0,
-            write=5.0,
-            pool=3.0
+            connect=10.0,
+            read=45.0,
+            write=10.0,
+            pool=10.0
         )
         
         # 使用连接池优化性能
@@ -135,8 +135,8 @@ class PansouClient:
         for attempt in range(retries + 1):
             try:
                 async with self._get_client() as client:
-                    # 搜索超时设置为 25 秒
-                    response = await client.post(url, json=payload, timeout=25)
+                    # 搜索超时设置为 40 秒
+                    response = await client.post(url, json=payload, timeout=40)
                     response.raise_for_status()
                     data = response.json()
                 
