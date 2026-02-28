@@ -84,7 +84,7 @@ class PansouClient:
             proxy=proxy,
             headers=self.headers,
             limits=limits,
-            http2=True  # 启用 HTTP/2
+            http2=False  # 启用 HTTP/2
         )
     
     async def search(

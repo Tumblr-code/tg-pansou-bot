@@ -4,18 +4,9 @@ services:
   tg-pansou-bot:
     build: .
     container_name: tg-pansou-bot
-    restart: unless-stopped
     env_file:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
-    # 使用 host 网络模式以访问宿主机代理
+    # 使用 host 网络模式
     network_mode: host
-    # 或者使用自定义网络
-    # networks:
-    #   - pansou-network
-
-# 如果需要连接到 pansou 服务，可以定义网络
-# networks:
-#   pansou-network:
-#     external: true

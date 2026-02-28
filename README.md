@@ -1,21 +1,20 @@
 # TG Pansou Bot 🤖
 
-[![Version](https://img.shields.io/badge/Version-1.0.0-blue.svg)](https://github.com/Tumblr-code/tg-pansou-bot/releases)
-[![Python](https://img.shields.io/badge/Python-3.11-green.svg)](https://www.python.org/)
-[![Docker](https://img.shields.io/badge/Docker-supported-blue.svg)](https://www.docker.com/)
+[![Version](https://img.shields.io/badge/Version-2.0.0-blue.svg)](https://github.com/Tumblr-code/tg-pansou-bot/releases)
+[![Python](https://img.shields.io/badge/Python-3.11+-green.svg)](https://www.python.org/)
+[![PM2](https://img.shields.io/badge/PM2-managed-blue.svg)](https://pm2.keymetrics.io/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-一个基于 [pansou](https://github.com/fish2018/pansou) API 的 Telegram Bot，支持搜索各种网盘资源。
+基于 [pansou](https://github.com/fish2018/pansou) API 的 Telegram 网盘资源搜索 Bot。
 
 ## ✨ 功能特性
 
-- 🔍 **智能搜索**: 支持关键词搜索网盘资源
-- 💬 **私聊支持**: 私聊直接发送关键词即可搜索
-- 👥 **群组支持**: 群组中使用 `/search` 命令搜索
-- 📁 **多网盘**: 支持百度、阿里、夸克、天翼、UC、115、PikPak 等
-- 🔄 **快捷操作**: 支持刷新结果、筛选网盘类型
-- ⚡ **快速响应**: 异步处理，快速返回结果
-- 🐳 **Docker 部署**: 一键 Docker 部署，简单方便
+- 🔍 **智能搜索** - 支持关键词搜索网盘资源
+- 💬 **私聊/群组** - 私聊直接发关键词，群组用命令搜索
+- 📁 **多网盘支持** - 百度、阿里、夸克、天翼、UC、115、PikPak、磁力等
+- 🔄 **分类查看** - 搜索结果按网盘类型分类显示
+- ⚡ **快速响应** - 异步处理，优化超时配置
+- 🎯 **PM2 管理** - 使用 PM2 管理进程，稳定运行
 
 ## 📋 支持的网盘
 
@@ -36,16 +35,20 @@
 
 ## 🚀 快速开始
 
-### 方法一：Docker 部署（推荐）
+### 环境要求
 
-#### 1. 克隆项目
+- Python 3.11+
+- PM2 (推荐)
+- pansou API 服务
+
+### 1. 克隆项目
 
 ```bash
 git clone https://github.com/Tumblr-code/tg-pansou-bot.git
 cd tg-pansou-bot
 ```
 
-#### 2. 配置环境变量
+### 2. 配置环境变量
 
 ```bash
 cp .env.example .env
@@ -68,212 +71,143 @@ PANSOU_API_TOKEN=
 DEFAULT_RESULT_LIMIT=10
 MAX_RESULT_LIMIT=20
 SEARCH_TIMEOUT=30
+
+# 管理员ID（可选，逗号分隔）
+ADMIN_IDS=your_admin_id
 ```
 
-#### 3. 启动服务
-
-```bash
-docker-compose up -d
-```
-
-### 方法二：本地部署
-
-#### 1. 克隆项目
-
-```bash
-git clone https://github.com/Tumblr-code/tg-pansou-bot.git
-cd tg-pansou-bot
-```
-
-#### 2. 创建虚拟环境
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-#### 3. 安装依赖
+### 3. 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-#### 4. 配置环境变量
+### 4. 启动 Bot（推荐使用 PM2）
 
 ```bash
-cp .env.example .env
-nano .env
+# 使用 PM2 启动
+pm2 start main.py --name tg-pansou-bot
+
+# 保存 PM2 进程列表，开机自动启动
+pm2 save
+
+# 查看日志
+pm2 logs tg-pansou-bot
 ```
 
-#### 5. 运行 Bot
+或使用启动脚本：
 
 ```bash
-python main.py
+./start.sh
 ```
 
-## 🔧 配置说明
-
-### 获取 Telegram Bot Token
-
-1. 在 Telegram 中搜索 @BotFather
-2. 发送 `/newbot` 创建新 Bot
-3. 按提示设置 Bot 名称和用户名
-4. 复制获得的 Token 到 `.env` 文件
-
-### Pansou API 部署
-
-本 Bot 依赖 pansou 服务，需要先部署 pansou：
-
-```bash
-docker run -d -p 8888:8888 --name pansou ghcr.io/fish2018/pansou:latest
-```
-
-或者使用 docker-compose：
-
-```yaml
-version: '3.8'
-services:
-  pansou:
-    image: ghcr.io/fish2018/pansou:latest
-    container_name: pansou
-    ports:
-      - "8888:8888"
-    restart: unless-stopped
-```
-
-### 网络配置
-
-如果使用 Docker Compose 同时部署 pansou 和 bot：
-
-```yaml
-version: '3.8'
-services:
-  pansou:
-    image: ghcr.io/fish2018/pansou:latest
-    container_name: pansou
-    ports:
-      - "8888:8888"
-    restart: unless-stopped
-    
-  tg-pansou-bot:
-    build: .
-    container_name: tg-pansou-bot
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      - PANSOU_API_URL=http://pansou:8888
-    depends_on:
-      - pansou
-```
-
-## 📖 使用教程
+## 📖 使用方法
 
 ### 私聊使用
 
-1. 在 Telegram 中搜索你的 Bot 用户名
-2. 点击 "Start" 或发送 `/start`
-3. 直接发送要搜索的关键词，如：`复仇者联盟`
-4. Bot 会返回搜索结果，点击链接即可查看
+1. 在 Telegram 搜索你的 Bot
+2. 发送 `/start` 开始
+3. 直接发送搜索关键词，如：`复仇者联盟`
+4. 点击网盘类型按钮查看详细结果
 
 ### 群组使用
 
 1. 将 Bot 添加到群组
-2. 授予 Bot 发送消息的权限
-3. 使用 `/search 关键词` 命令搜索，如：`/search 复仇者联盟`
+2. 使用 `/search 关键词` 搜索
 
 ### 可用命令
 
-| 命令 | 说明 |
-|------|------|
-| `/start` | 开始使用 |
-| `/help` | 显示帮助信息 |
-| `/search <关键词>` | 搜索资源（群组中必须使用） |
+| 命令 | 说明 | 权限 |
+|------|------|------|
+| `/start` | 开始使用 | 所有人 |
+| `/help` | 帮助信息 | 所有人 |
+| `/search <关键词>` | 搜索资源 | 所有人 |
+| `/status` | 服务状态 | 管理员 |
+| `/settings` | 管理设置 | 管理员 |
+| `/filter` | 搜索过滤 | 管理员 |
 
-## 🐳 Docker 管理
-
-### 查看日志
-
-```bash
-docker logs -f tg-pansou-bot
-```
-
-### 重启服务
+## ⚙️ PM2 管理命令
 
 ```bash
-docker-compose restart
+# 查看状态
+pm2 list
+
+# 查看日志
+pm2 logs tg-pansou-bot
+
+# 重启
+pm2 restart tg-pansou-bot
+
+# 停止
+pm2 stop tg-pansou-bot
+
+# 删除
+pm2 delete tg-pansou-bot
 ```
 
-### 停止服务
+## 🔧 部署 Pansou API
 
 ```bash
-docker-compose down
+# 使用 Docker 部署 pansou
+docker run -d -p 8888:8888 --name pansou ghcr.io/fish2018/pansou:latest
 ```
 
-### 更新镜像
+## �️ 技术栈
 
-```bash
-docker-compose pull
-docker-compose up -d
-```
-
-## 🔍 故障排查
-
-### Bot 无响应
-
-1. 检查日志：`docker logs tg-pansou-bot`
-2. 确认 Token 正确
-3. 检查网络连接
-4. 确认 pansou 服务正常运行
-
-### 搜索结果为空
-
-1. 检查 pansou API 是否可访问
-2. 确认搜索关键词有效
-3. 查看 pansou 服务日志
-
-### 网络超时
-
-1. 检查服务器网络连接
-2. 确认没有防火墙阻挡
-3. 尝试重启服务
+- **Python 3.11+** - 编程语言
+- **python-telegram-bot 22.x** - Telegram Bot 框架
+- **httpx** - 异步 HTTP 客户端
+- **pydantic** - 数据验证
+- **PM2** - 进程管理
+- **Docker** - 容器化部署（可选）
 
 ## 📁 项目结构
 
 ```
 tg-pansou-bot/
-├── main.py              # 主程序入口
-├── run_bot.py           # Bot 运行脚本
+├── main.py              # 程序入口
+├── start.sh             # 启动脚本
 ├── requirements.txt     # Python 依赖
 ├── Dockerfile           # Docker 构建文件
 ├── docker-compose.yml   # Docker Compose 配置
 ├── .env.example         # 环境变量示例
 ├── .gitignore           # Git 忽略文件
-├── start.sh             # 启动脚本
 ├── README.md            # 项目说明
+├── CHANGELOG.md         # 更新日志
+├── DEPLOY.md            # 部署文档
 ├── data/                # 数据目录
-└── src/                 # 源代码目录
-    └── bot/
-        ├── __init__.py
-        ├── handlers.py    # 消息处理器
-        └── utils.py       # 工具函数
+└── src/                 # 源代码
+    ├── bot.py           # Bot 主逻辑
+    ├── config.py        # 配置管理
+    ├── pansou_client.py # Pansou API 客户端
+    ├── user_settings.py # 用户设置
+    └── bot_config.py    # Bot 优化配置
 ```
 
-## 🛠️ 技术栈
+## � 故障排查
 
-- **Python 3.11**: 主要编程语言
-- **python-telegram-bot**: Telegram Bot 框架
-- **httpx**: 异步 HTTP 客户端
-- **pydantic**: 数据验证
-- **Docker**: 容器化部署
+### Bot 无响应
 
-## 🤝 贡献指南
+```bash
+# 查看日志
+pm2 logs tg-pansou-bot
 
-欢迎提交 Issue 和 Pull Request！
+# 检查状态
+pm2 list
+
+# 重启
+pm2 restart tg-pansou-bot
+```
+
+### 检查项
+
+1. 确认 `.env` 中 Token 正确
+2. 确认 pansou 服务运行正常：`curl http://localhost:8888/api/health`
+3. 检查网络连接
 
 ## 📄 许可证
 
-本项目基于 MIT 许可证开源。
+MIT License
 
 ## 🙏 致谢
 

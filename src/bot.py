@@ -1027,13 +1027,12 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 def create_application() -> Application:
     """创建并配置 Bot 应用"""
+    from bot_config import create_optimized_request
+    
     application = (
         Application.builder()
         .token(settings.tg_bot_token)
-        .read_timeout(60)   # 给搜索足够时间
-        .write_timeout(30)
-        .connect_timeout(10)
-        .pool_timeout(10)
+        .request(create_optimized_request())
         .concurrent_updates(True)
         .build()
     )
@@ -1104,19 +1103,27 @@ async def main() -> None:
     logger.info("bot_started")
     await application.initialize()
     await application.start()
+    
+    try:
+        bot = application.bot
+        user = await bot.get_me()
+        logger.info("telegram_api_connected", bot_name=user.first_name, bot_username=user.username)
+        print(f"✅ Telegram API 连接成功: {user.first_name} (@{user.username})")
+    except Exception as e:
+        logger.error("telegram_api_connection_failed", error=str(e))
+        print(f"❌ Telegram API 连接失败: {str(e)}")
+    
     await application.updater.start_polling(
         drop_pending_updates=True,
-        poll_interval=0.5,  # 更快的轮询间隔
-        timeout=10,         # 请求超时
+        poll_interval=0.5,
+        timeout=60,
         bootstrap_retries=3
     )
     
-    try:
-        await asyncio.Event().wait()
-    finally:
-        await application.updater.stop()
-        await application.stop()
-        await application.shutdown()
+    logger.info("bot_polling_started")
+    print("✅ 机器人轮询已启动")
+    
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
