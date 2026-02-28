@@ -135,8 +135,8 @@ class PansouClient:
         for attempt in range(retries + 1):
             try:
                 async with self._get_client() as client:
-                    # 搜索超时设置为 40 秒
-                    response = await client.post(url, json=payload, timeout=40)
+                    # 搜索超时设置为 60 秒
+                    response = await client.post(url, json=payload, timeout=60)
                     response.raise_for_status()
                     data = response.json()
                 
