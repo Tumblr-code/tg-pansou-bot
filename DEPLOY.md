@@ -192,6 +192,8 @@ docker-compose up -d
 
 ### 配置系统服务（systemd）
 
+#### 方式一：Docker 部署（推荐）
+
 创建服务文件：
 
 ```bash
@@ -219,6 +221,68 @@ EOF
 ```bash
 systemctl enable tg-pansou-bot
 systemctl start tg-pansou-bot
+```
+
+#### 方式二：Python 本地运行
+
+如果需要使用 Python 直接运行（不使用 Docker），配置如下：
+
+**1. 创建 Pansou Docker 服务**
+
+```bash
+cat > /etc/systemd/system/pansou-docker.service << 'EOF'
+[Unit]
+Description=Pansou Docker Container
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/docker start pansou
+ExecStop=/usr/bin/docker stop pansou
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+**2. 创建 Bot 服务**
+
+```bash
+cat > /etc/systemd/system/tg-pansou-bot.service << 'EOF'
+[Unit]
+Description=TG Pansou Bot
+After=network.target docker.service pansou-docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/tg-pansou-bot
+Environment="HTTP_PROXY=http://127.0.0.1:7890"
+Environment="HTTPS_PROXY=http://127.0.0.1:7890"
+ExecStart=/bin/bash -c 'source venv/bin/activate && python3 main.py'
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+**3. 启用并启动服务**
+
+```bash
+systemctl daemon-reload
+systemctl enable pansou-docker tg-pansou-bot
+systemctl start pansou-docker tg-pansou-bot
+```
+
+**4. 查看状态**
+
+```bash
+systemctl status tg-pansou-bot pansou-docker
 ```
 
 ---
