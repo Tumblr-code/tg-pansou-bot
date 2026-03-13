@@ -3,7 +3,9 @@
 Telegram Bot 主模块 - 支持分类按钮
 """
 import asyncio
+import time
 from typing import Optional
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -24,8 +26,52 @@ from user_settings import settings_manager, CLOUD_TYPE_NAMES as SETTINGS_CLOUD_N
 
 logger = get_logger()
 
-# 存储搜索结果缓存
-search_cache = {}
+
+class LRUCache:
+    """带 TTL 的 LRU 缓存"""
+    
+    def __init__(self, max_size: int = 100, ttl: int = 300):
+        self.max_size = max_size
+        self.ttl = ttl
+        self._cache: OrderedDict = OrderedDict()
+        self._timestamps: dict = {}
+    
+    def get(self, key: str):
+        """获取缓存值"""
+        if key not in self._cache:
+            return None
+        if time.time() - self._timestamps.get(key, 0) > self.ttl:
+            self._remove(key)
+            return None
+        self._cache.move_to_end(key)
+        return self._cache[key]
+    
+    def set(self, key: str, value):
+        """设置缓存值"""
+        if key in self._cache:
+            self._remove(key)
+        elif len(self._cache) >= self.max_size:
+            self._cache.popitem(last=False)
+            oldest_key = next(iter(self._timestamps.keys() - self._cache.keys()), None)
+            if oldest_key:
+                self._timestamps.pop(oldest_key, None)
+        self._cache[key] = value
+        self._timestamps[key] = time.time()
+    
+    def _remove(self, key: str):
+        """移除缓存项"""
+        self._cache.pop(key, None)
+        self._timestamps.pop(key, None)
+    
+    def clear_expired(self):
+        """清理过期缓存"""
+        now = time.time()
+        expired = [k for k, t in self._timestamps.items() if now - t > self.ttl]
+        for k in expired:
+            self._remove(k)
+
+
+search_cache = LRUCache(max_size=50, ttl=300)
 
 # 存储需要自动删除的消息
 pending_deletions = {}
@@ -613,18 +659,15 @@ async def perform_search(
         
         # 保存结果到缓存
         cache_key = f"{chat_id}:{user_id}"
-        search_cache[cache_key] = {
+        search_cache.set(cache_key, {
             "keyword": keyword,
             "results": results,
-            "timestamp": asyncio.get_event_loop().time()
-        }
+            "timestamp": time.time()
+        })
         
-        # 生成概览文本
         overview_text = pansou_client.format_overview(results, keyword)
-        # 添加自动删除提示
         overview_text = add_auto_delete_notice(overview_text, ParseMode.HTML)
         
-        # 生成类型按钮
         type_buttons = pansou_client.get_type_buttons(results)
         keyboard = create_type_keyboard(type_buttons, cache_key)
         
@@ -718,18 +761,15 @@ async def perform_search_from_callback(
         
         # 保存结果到缓存
         cache_key = f"{chat_id}:{user_id}"
-        search_cache[cache_key] = {
+        search_cache.set(cache_key, {
             "keyword": keyword,
             "results": results,
-            "timestamp": asyncio.get_event_loop().time()
-        }
+            "timestamp": time.time()
+        })
         
-        # 生成概览文本
         overview_text = pansou_client.format_overview(results, keyword)
-        # 添加自动删除提示
         overview_text = add_auto_delete_notice(overview_text, ParseMode.HTML)
         
-        # 生成类型按钮
         type_buttons = pansou_client.get_type_buttons(results)
         keyboard = create_type_keyboard(type_buttons, cache_key)
         
@@ -858,13 +898,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data.startswith("refresh:"):
         parts = data.split(":")
         if len(parts) >= 2:
-            # cache_key 格式是 chat_id:user_id，需要重新组合
             old_cache_key = ":".join(parts[1:])
-            # 获取之前的搜索关键词
-            if old_cache_key in search_cache:
-                keyword = search_cache[old_cache_key]["keyword"]
-            else:
-                keyword = ""
+            cached = search_cache.get(old_cache_key)
+            keyword = cached["keyword"] if cached else ""
         else:
             keyword = ""
         
@@ -887,18 +923,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     # 处理显示全部
     if data.startswith("all:"):
-        if cache_key not in search_cache:
+        cached_data = search_cache.get(cache_key)
+        if not cached_data:
             expired_text = add_auto_delete_notice("⚠️ 搜索结果已过期，请重新搜索", ParseMode.HTML)
             await query.edit_message_text(expired_text, parse_mode=ParseMode.HTML)
             schedule_message_deletion(chat_id, query.message.message_id)
             return
         
-        cached_data = search_cache[cache_key]
         results = cached_data["results"]
         keyword = cached_data["keyword"]
         
         formatted_text = pansou_client.format_results(results, keyword)
-        # 添加自动删除提示
         formatted_text = add_auto_delete_notice(formatted_text, ParseMode.HTML)
         
         if len(formatted_text) > 4000:
@@ -921,18 +956,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     # 处理返回分类
     if data.startswith("back:"):
-        if cache_key not in search_cache:
+        cached_data = search_cache.get(cache_key)
+        if not cached_data:
             expired_text = add_auto_delete_notice("⚠️ 搜索结果已过期，请重新搜索", ParseMode.HTML)
             await query.edit_message_text(expired_text, parse_mode=ParseMode.HTML)
             schedule_message_deletion(chat_id, query.message.message_id)
             return
         
-        cached_data = search_cache[cache_key]
         results = cached_data["results"]
         keyword = cached_data["keyword"]
         
         overview_text = pansou_client.format_overview(results, keyword)
-        # 添加自动删除提示
         overview_text = add_auto_delete_notice(overview_text, ParseMode.HTML)
         type_buttons = pansou_client.get_type_buttons(results)
         keyboard = create_type_keyboard(type_buttons, cache_key)
@@ -961,13 +995,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.answer("❌ 参数错误")
             return
         
-        if cache_key not in search_cache:
+        cached_data = search_cache.get(cache_key)
+        if not cached_data:
             expired_text = add_auto_delete_notice("⚠️ 搜索结果已过期，请重新搜索", ParseMode.HTML)
             await query.edit_message_text(expired_text, parse_mode=ParseMode.HTML)
             schedule_message_deletion(chat_id, query.message.message_id)
             return
         
-        cached_data = search_cache[cache_key]
         results = cached_data["results"]
         keyword = cached_data["keyword"]
         

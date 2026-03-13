@@ -1,9 +1,13 @@
 """
-Pansou API 客户端
+Pansou API 客户端 - 优化版
+- 单例模式复用 HTTP 客户端
+- 连接池优化
+- 指数退避重试机制
 """
 import asyncio
 import html
 import re
+import time
 from typing import Optional, List, Dict, Any
 import httpx
 from structlog import get_logger
@@ -12,7 +16,6 @@ from config import settings
 
 logger = get_logger()
 
-# 网盘类型中文映射
 CLOUD_TYPE_NAMES = {
     "baidu": "百度网盘",
     "aliyun": "阿里云盘",
@@ -29,7 +32,6 @@ CLOUD_TYPE_NAMES = {
     "others": "其他",
 }
 
-# 网盘类型图标
 CLOUD_TYPE_ICONS = {
     "baidu": "🔴",
     "aliyun": "🔵",
@@ -48,44 +50,64 @@ CLOUD_TYPE_ICONS = {
 
 
 class PansouClient:
-    """Pansou API 客户端"""
+    """Pansou API 客户端 - 单例模式，复用连接池"""
+    
+    _instance = None
+    _client: Optional[httpx.AsyncClient] = None
+    _lock = asyncio.Lock()
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
     
     def __init__(self):
+        if hasattr(self, '_initialized') and self._initialized:
+            return
+        self._initialized = True
         self.base_url = settings.pansou_api_url.rstrip('/')
         self.timeout = settings.search_timeout
         self.headers = {}
         if settings.pansou_api_token:
             self.headers["Authorization"] = f"Bearer {settings.pansou_api_token}"
     
-    def _get_client(self) -> httpx.AsyncClient:
-        """创建 HTTP 客户端（优化连接速度）"""
-        proxy = None
-        proxies = settings.get_proxies()
-        if proxies:
-            proxy = proxies.get('https://') or proxies.get('http://')
-        
-        # 优化超时设置：连接10秒，读取45秒
-        timeout = httpx.Timeout(
-            connect=10.0,
-            read=45.0,
-            write=10.0,
-            pool=10.0
-        )
-        
-        # 使用连接池优化性能
-        limits = httpx.Limits(
-            max_keepalive_connections=10,
-            max_connections=20,
-            keepalive_expiry=30.0
-        )
-        
-        return httpx.AsyncClient(
-            timeout=timeout,
-            proxy=proxy,
-            headers=self.headers,
-            limits=limits,
-            http2=False  # 启用 HTTP/2
-        )
+    async def _get_client(self) -> httpx.AsyncClient:
+        """获取或创建 HTTP 客户端（单例模式）"""
+        if self._client is None or self._client.is_closed:
+            async with self._lock:
+                if self._client is None or self._client.is_closed:
+                    proxy = None
+                    proxies = settings.get_proxies()
+                    if proxies:
+                        proxy = proxies.get('https://') or proxies.get('http://')
+                    
+                    timeout = httpx.Timeout(
+                        connect=5.0,
+                        read=30.0,
+                        write=10.0,
+                        pool=5.0
+                    )
+                    
+                    limits = httpx.Limits(
+                        max_keepalive_connections=20,
+                        max_connections=50,
+                        keepalive_expiry=60.0
+                    )
+                    
+                    self._client = httpx.AsyncClient(
+                        timeout=timeout,
+                        proxy=proxy,
+                        headers=self.headers,
+                        limits=limits,
+                        http2=True
+                    )
+        return self._client
+    
+    async def close(self):
+        """关闭客户端连接"""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
     
     async def search(
         self,
@@ -96,23 +118,10 @@ class PansouClient:
         source_type: Optional[str] = None,
         filter_config: Optional[dict] = None,
         limit: int = 10,
-        retries: int = 2
+        max_retries: int = 3
     ) -> Dict[str, Any]:
         """
-        搜索网盘资源（带重试机制）
-        
-        Args:
-            keyword: 搜索关键词
-            channels: 搜索频道列表
-            plugins: 指定插件列表
-            cloud_types: 指定网盘类型
-            source_type: 来源类型 (all/tg/plugin)
-            filter_config: 过滤配置 {"include": [], "exclude": []}
-            limit: 返回结果数量限制
-            retries: 重试次数
-        
-        Returns:
-            搜索结果
+        搜索网盘资源（指数退避重试）
         """
         url = f"{self.base_url}/api/search"
         
@@ -132,13 +141,12 @@ class PansouClient:
             payload["filter"] = filter_config
         
         last_error = None
-        for attempt in range(retries + 1):
+        for attempt in range(max_retries):
             try:
-                async with self._get_client() as client:
-                    # 搜索超时设置为 60 秒
-                    response = await client.post(url, json=payload, timeout=60)
-                    response.raise_for_status()
-                    data = response.json()
+                client = await self._get_client()
+                response = await client.post(url, json=payload, timeout=45)
+                response.raise_for_status()
+                data = response.json()
                 
                 if data.get("code") != 0:
                     logger.error("search_failed", code=data.get("code"), message=data.get("message"))
@@ -146,24 +154,23 @@ class PansouClient:
                 
                 result = data.get("data", {})
                 
-                # 应用本地过滤（二次过滤）
                 if filter_config and result.get("merged_by_type"):
                     result["merged_by_type"] = self._apply_filter(
                         result["merged_by_type"], 
                         filter_config
                     )
-                    # 重新计算总数
                     result["total"] = sum(
                         len(links) for links in result["merged_by_type"].values()
                     )
                 
                 return result
                 
-            except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as e:
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as e:
                 last_error = e
-                if attempt < retries:
-                    logger.warning("search_retry", keyword=keyword, attempt=attempt + 1, error=str(e))
-                    await asyncio.sleep(1)  # 等待1秒后重试
+                if attempt < max_retries - 1:
+                    wait_time = min(0.5 * (2 ** attempt), 5.0)
+                    logger.warning("search_retry", keyword=keyword, attempt=attempt + 1, wait=wait_time, error=str(e))
+                    await asyncio.sleep(wait_time)
                     continue
                 else:
                     logger.error("search_failed_after_retries", keyword=keyword, error=str(e))
@@ -176,6 +183,8 @@ class PansouClient:
             except Exception as e:
                 logger.error("search_exception", error=str(e))
                 return {"error": f"搜索出错: {str(e)}"}
+        
+        return {"error": "搜索失败，请稍后重试"}
     
     def _apply_filter(
         self, 
@@ -223,9 +232,9 @@ class PansouClient:
     async def health_check(self) -> bool:
         """检查 pansou 服务是否健康"""
         try:
-            async with self._get_client() as client:
-                response = await client.get(f"{self.base_url}/api/health", timeout=5)
-                return response.status_code == 200
+            client = await self._get_client()
+            response = await client.get(f"{self.base_url}/api/health", timeout=5)
+            return response.status_code == 200
         except Exception:
             return False
     
