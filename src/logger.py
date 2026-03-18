@@ -5,7 +5,7 @@ import sys
 import structlog
 from structlog.stdlib import LoggerFactory
 from structlog.processors import TimeStamper, add_log_level, JSONRenderer
-from src.config import settings
+from config import settings
 
 
 def setup_logging():

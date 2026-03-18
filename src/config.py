@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     def is_admin(self, user_id: int) -> bool:
         """检查用户是否为管理员"""
         admins = self.get_admin_ids()
-        return len(admins) == 0 or user_id in admins  # 未设置管理员时所有人都是管理员
+        return user_id in admins
 
 
 # 全局配置实例

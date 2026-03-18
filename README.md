@@ -1,6 +1,6 @@
 # TG Pansou Bot 🤖
 
-[![Version](https://img.shields.io/badge/Version-2.0.0-blue.svg)](https://github.com/Tumblr-code/tg-pansou-bot/releases)
+[![Version](https://img.shields.io/badge/Version-2.1.0-blue.svg)](https://github.com/Tumblr-code/tg-pansou-bot/releases)
 [![Python](https://img.shields.io/badge/Python-3.11+-green.svg)](https://www.python.org/)
 [![PM2](https://img.shields.io/badge/PM2-managed-blue.svg)](https://pm2.keymetrics.io/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -14,6 +14,8 @@
 - 📁 **多网盘支持** - 百度、阿里、夸克、天翼、UC、115、PikPak、磁力等
 - 🔄 **分类查看** - 搜索结果按网盘类型分类显示
 - ⚡ **快速响应** - 异步处理，优化超时配置
+- 🚦 **稳定保护** - 热门查询缓存、并发合并、频率限制
+- ♻️ **运维命令** - 支持运行时刷新与在线更新
 - 🎯 **PM2 管理** - 使用 PM2 管理进程，稳定运行
 
 ## 📋 支持的网盘
@@ -72,7 +74,7 @@ DEFAULT_RESULT_LIMIT=10
 MAX_RESULT_LIMIT=20
 SEARCH_TIMEOUT=30
 
-# 管理员ID（可选，逗号分隔）
+# 管理员ID（建议配置，逗号分隔）
 ADMIN_IDS=your_admin_id
 ```
 
@@ -123,8 +125,26 @@ pm2 logs tg-pansou-bot
 | `/help` | 帮助信息 | 所有人 |
 | `/search <关键词>` | 搜索资源 | 所有人 |
 | `/status` | 服务状态 | 管理员 |
+| `/refresh` | 刷新运行时缓存与服务状态 | 管理员 |
+| `/update` | 拉取最新代码并重启 | 管理员 |
 | `/settings` | 管理设置 | 管理员 |
 | `/filter` | 搜索过滤 | 管理员 |
+
+### 管理维护命令
+
+- `/status`：检查 Bot 和 Pansou API 是否正常
+- `/refresh`：清理运行时缓存、限流记录和设置缓存，并重新探测 Pansou API
+- `/update`：从 GitHub 拉取当前分支最新代码；如果 `requirements.txt` 有变化，会自动安装依赖并重启机器人
+
+### `/update` 使用说明
+
+`/update` 适合部署后在线更新，执行前会自动做这些检查：
+
+- 当前目录必须是 Git 仓库
+- 当前分支必须可识别并且能访问 `origin/<branch>`
+- 本地不能有未提交修改，否则会终止更新，避免覆盖改动
+
+更新成功后，Bot 会自动重启并加载最新代码。
 
 ## ⚙️ PM2 管理命令
 
@@ -152,7 +172,7 @@ pm2 delete tg-pansou-bot
 docker run -d -p 8888:8888 --name pansou ghcr.io/fish2018/pansou:latest
 ```
 
-## �️ 技术栈
+## 🛠️ 技术栈
 
 - **Python 3.11+** - 编程语言
 - **python-telegram-bot 22.x** - Telegram Bot 框架
@@ -184,7 +204,7 @@ tg-pansou-bot/
     └── bot_config.py    # Bot 优化配置
 ```
 
-## � 故障排查
+## 🧯 故障排查
 
 ### Bot 无响应
 
@@ -202,8 +222,11 @@ pm2 restart tg-pansou-bot
 ### 检查项
 
 1. 确认 `.env` 中 Token 正确
-2. 确认 pansou 服务运行正常：`curl http://localhost:8888/api/health`
-3. 检查网络连接
+2. 确认 `ADMIN_IDS` 已配置，否则管理员命令不会开放
+3. 确认 pansou 服务运行正常：`curl http://localhost:8888/api/health`
+4. 检查网络连接
+5. 如需刷新状态可执行 `/refresh`
+6. 如需在线拉取新版本可执行 `/update`
 
 ## 📄 许可证
 

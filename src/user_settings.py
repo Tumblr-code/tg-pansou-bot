@@ -194,6 +194,12 @@ class SettingsManager:
         self.settings_cache[user_id] = settings
         return settings
 
+    def clear_cache(self) -> int:
+        """清理内存中的设置缓存。"""
+        count = len(self.settings_cache)
+        self.settings_cache.clear()
+        return count
+
 
 # 全局设置管理器实例
 settings_manager = SettingsManager()
