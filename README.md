@@ -78,6 +78,15 @@ SEARCH_TIMEOUT=30
 ADMIN_IDS=your_admin_id
 ```
 
+`ADMIN_IDS` 必须填写你自己的 Telegram 数字 ID，否则所有管理员命令都不会生效，包括：
+
+- `/status`
+- `/settings`
+- `/filter`
+- `/types`
+- `/refresh`
+- `/update`
+
 ### 3. 安装依赖
 
 ```bash
@@ -222,7 +231,7 @@ pm2 restart tg-pansou-bot
 ### 检查项
 
 1. 确认 `.env` 中 Token 正确
-2. 确认 `ADMIN_IDS` 已配置，否则管理员命令不会开放
+2. 确认 `ADMIN_IDS` 已配置为正确的 Telegram 数字 ID，否则管理员命令不会开放
 3. 确认 pansou 服务运行正常：`curl http://localhost:8888/api/health`
 4. 检查网络连接
 5. 如需刷新状态可执行 `/refresh`
