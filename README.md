@@ -1,6 +1,6 @@
 # TG Pansou Bot 🤖
 
-[![Version](https://img.shields.io/badge/Version-2.1.0-blue.svg)](https://github.com/Tumblr-code/tg-pansou-bot/releases)
+[![Version](https://img.shields.io/badge/Version-2.2.0-blue.svg)](https://github.com/Tumblr-code/tg-pansou-bot/releases)
 [![Python](https://img.shields.io/badge/Python-3.11+-green.svg)](https://www.python.org/)
 [![PM2](https://img.shields.io/badge/PM2-managed-blue.svg)](https://pm2.keymetrics.io/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -16,6 +16,7 @@
 - ⚡ **快速响应** - 异步处理，优化超时配置
 - 🚦 **稳定保护** - 热门查询缓存、并发合并、频率限制
 - ♻️ **运维命令** - 支持运行时刷新与在线更新
+- 🌐 **HTTP API** - 可通过本地 API 复用搜索能力，便于接 webhook / 企业微信客服
 - 🎯 **PM2 管理** - 使用 PM2 管理进程，稳定运行
 
 ## 📋 支持的网盘
@@ -76,6 +77,11 @@ SEARCH_TIMEOUT=30
 
 # 管理员ID（建议配置，逗号分隔）
 ADMIN_IDS=your_admin_id
+
+# HTTP API（可选）
+HTTP_API_HOST=127.0.0.1
+HTTP_API_PORT=8090
+HTTP_API_TOKEN=replace_with_random_secret
 ```
 
 `ADMIN_IDS` 必须填写你自己的 Telegram 数字 ID，否则所有管理员命令都不会生效，包括：
@@ -111,6 +117,16 @@ pm2 logs tg-pansou-bot
 ```bash
 ./start.sh
 ```
+
+### 5. 启动 HTTP API（可选）
+
+如果你需要给企业微信客服、Webhook 或站点页面复用搜索能力，可以单独启动 HTTP API：
+
+```bash
+python api_main.py
+```
+
+推荐只监听 `127.0.0.1`，再由 Nginx、Cloudflare Tunnel 或其他网关转发。
 
 ## 📖 使用方法
 
@@ -155,6 +171,59 @@ pm2 logs tg-pansou-bot
 
 更新成功后，Bot 会自动重启并加载最新代码。
 
+## 🌐 HTTP API
+
+HTTP API 适合提供给本机网关、企业微信客服适配层或其他 webhook 服务调用。
+
+### 可用接口
+
+| 路径 | 方法 | 说明 |
+|------|------|------|
+| `/healthz` | `GET` | 检查 HTTP API 和上游 pansou 是否可用 |
+| `/api/pansou/search` | `GET` / `POST` | 调用搜索能力并返回结构化 JSON |
+
+### 鉴权方式
+
+如果配置了 `HTTP_API_TOKEN`，请求时需要携带以下任一请求头：
+
+```http
+Authorization: Bearer your_token
+```
+
+或：
+
+```http
+X-API-Token: your_token
+```
+
+### 请求示例
+
+```bash
+curl -H "Authorization: Bearer your_token" \
+  "http://127.0.0.1:8090/api/pansou/search?kw=三体&limit=5"
+```
+
+```bash
+curl -X POST "http://127.0.0.1:8090/api/pansou/search" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_token" \
+  -d '{
+    "keyword": "三体",
+    "limit": 5,
+    "cloud_types": ["quark", "aliyun"]
+  }'
+```
+
+### 返回结构
+
+接口会返回：
+
+- `summary`：按网盘类型汇总的结果数
+- `items`：扁平化后的资源列表，包含 `note`、`url`、`password`、`source`
+- `total`：总结果数
+
+这样可以直接给站点页面、企业微信客服消息模板或其他机器人二次封装。
+
 ## ⚙️ PM2 管理命令
 
 ```bash
@@ -196,6 +265,7 @@ docker run -d -p 8888:8888 --name pansou ghcr.io/fish2018/pansou:latest
 tg-pansou-bot/
 ├── main.py              # 程序入口
 ├── start.sh             # 启动脚本
+├── api_main.py          # HTTP API 入口
 ├── requirements.txt     # Python 依赖
 ├── Dockerfile           # Docker 构建文件
 ├── docker-compose.yml   # Docker Compose 配置
@@ -207,6 +277,7 @@ tg-pansou-bot/
 ├── data/                # 数据目录
 └── src/                 # 源代码
     ├── bot.py           # Bot 主逻辑
+    ├── http_api.py      # HTTP API 服务
     ├── config.py        # 配置管理
     ├── pansou_client.py # Pansou API 客户端
     ├── user_settings.py # 用户设置

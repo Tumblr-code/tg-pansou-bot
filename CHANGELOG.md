@@ -5,6 +5,22 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 并且本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.2.0] - 2026-03-19
+
+### 🌐 Webhook 接入准备
+
+### Added
+
+- 新增独立 `HTTP API` 入口 `api_main.py`
+- 新增 `src/http_api.py`，提供 `/healthz` 和 `/api/pansou/search`
+- 新增 `HTTP_API_HOST`、`HTTP_API_PORT`、`HTTP_API_TOKEN` 配置项
+- 新增结构化 JSON 搜索输出，便于企业微信客服、Webhook 和站点页面复用
+
+### Changed
+
+- README 和 `.env.example` 补充 HTTP API 启动方式、鉴权方式和请求示例
+- 搜索能力从纯 Telegram 交互扩展为可复用的本地服务层
+
 ## [2.1.0] - 2026-03-18
 
 ### 🚀 稳定性与运维升级

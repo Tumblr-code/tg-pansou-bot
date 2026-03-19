@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     
     # 管理员配置
     admin_ids: Optional[str] = Field(default=None, description="管理员ID列表，逗号分隔")
+
+    # HTTP API 配置
+    http_api_host: str = Field(default="127.0.0.1", description="HTTP API 监听地址")
+    http_api_port: int = Field(default=8090, ge=1, le=65535, description="HTTP API 监听端口")
+    http_api_token: Optional[str] = Field(default=None, description="HTTP API 访问令牌")
     
     class Config:
         env_file = ".env"
