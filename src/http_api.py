@@ -75,7 +75,10 @@ def _extract_filter_config(data: dict[str, Any]) -> Optional[dict[str, list[str]
     }
 
 
-def _flatten_results(results: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _flatten_results(
+    results: dict[str, Any],
+    item_limit: Optional[int] = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     summary: list[dict[str, Any]] = []
     items: list[dict[str, Any]] = []
 
@@ -95,6 +98,9 @@ def _flatten_results(results: dict[str, Any]) -> tuple[list[dict[str, Any]], lis
         )
 
         for link in links:
+            if item_limit is not None and len(items) >= item_limit:
+                continue
+
             items.append(
                 {
                     "cloud_type": cloud_type,
@@ -228,13 +234,14 @@ async def search_handler(request: web.Request) -> web.Response:
             status=502,
         )
 
-    summary, items = _flatten_results(results)
+    summary, items = _flatten_results(results, item_limit=limit)
     return _json_response(
         {
             "ok": True,
             "keyword": keyword,
             "limit": limit,
             "total": results.get("total", 0),
+            "returned_items": len(items),
             "summary": summary,
             "items": items,
         }
