@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     http_api_host: str = Field(default="127.0.0.1", description="HTTP API 监听地址")
     http_api_port: int = Field(default=8090, ge=1, le=65535, description="HTTP API 监听端口")
     http_api_token: Optional[str] = Field(default=None, description="HTTP API 访问令牌")
+
+    # 企业微信客服配置
+    wecom_corp_id: Optional[str] = Field(default=None, description="企业微信 CorpID")
+    wecom_secret: Optional[str] = Field(default=None, description="企业微信客服 Secret")
+    wecom_token: Optional[str] = Field(default=None, description="企业微信客服回调 Token")
+    wecom_encoding_aes_key: Optional[str] = Field(default=None, description="企业微信客服回调 EncodingAESKey")
+    wecom_open_kfid: Optional[str] = Field(default=None, description="默认客服账号 open_kfid")
+    wecom_search_limit: int = Field(default=5, ge=1, le=10, description="企业微信客服默认返回条数")
     
     class Config:
         env_file = ".env"

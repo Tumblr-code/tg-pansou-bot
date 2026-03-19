@@ -1,6 +1,6 @@
 # TG Pansou Bot 🤖
 
-[![Version](https://img.shields.io/badge/Version-2.2.0-blue.svg)](https://github.com/Tumblr-code/tg-pansou-bot/releases)
+[![Version](https://img.shields.io/badge/Version-2.3.0-blue.svg)](https://github.com/Tumblr-code/tg-pansou-bot/releases)
 [![Python](https://img.shields.io/badge/Python-3.11+-green.svg)](https://www.python.org/)
 [![PM2](https://img.shields.io/badge/PM2-managed-blue.svg)](https://pm2.keymetrics.io/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -17,6 +17,7 @@
 - 🚦 **稳定保护** - 热门查询缓存、并发合并、频率限制
 - ♻️ **运维命令** - 支持运行时刷新与在线更新
 - 🌐 **HTTP API** - 可通过本地 API 复用搜索能力，便于接 webhook / 企业微信客服
+- 💼 **企业微信客服** - 支持回调验签、消息读取和自动搜索回复
 - 🎯 **PM2 管理** - 使用 PM2 管理进程，稳定运行
 
 ## 📋 支持的网盘
@@ -82,6 +83,14 @@ ADMIN_IDS=your_admin_id
 HTTP_API_HOST=127.0.0.1
 HTTP_API_PORT=8090
 HTTP_API_TOKEN=replace_with_random_secret
+
+# 企业微信客服（可选）
+WECOM_CORP_ID=
+WECOM_SECRET=
+WECOM_TOKEN=
+WECOM_ENCODING_AES_KEY=
+WECOM_OPEN_KFID=
+WECOM_SEARCH_LIMIT=5
 ```
 
 `ADMIN_IDS` 必须填写你自己的 Telegram 数字 ID，否则所有管理员命令都不会生效，包括：
@@ -181,6 +190,8 @@ HTTP API 适合提供给本机网关、企业微信客服适配层或其他 webh
 |------|------|------|
 | `/healthz` | `GET` | 检查 HTTP API 和上游 pansou 是否可用 |
 | `/api/pansou/search` | `GET` / `POST` | 调用搜索能力并返回结构化 JSON |
+| `/api/wecom/accounts` | `GET` | 查询企业微信客服账号列表 |
+| `/wecom/callback` | `GET` / `POST` | 企业微信客服回调校验与消息接收入口 |
 
 ### 鉴权方式
 
@@ -223,6 +234,58 @@ curl -X POST "http://127.0.0.1:8090/api/pansou/search" \
 - `total`：总结果数
 
 这样可以直接给站点页面、企业微信客服消息模板或其他机器人二次封装。
+
+## 💼 企业微信客服接入
+
+这套适配层适合把 `tg-pansou-bot` 当作企业微信客服的搜索后端使用。
+
+### 需要配置的环境变量
+
+```env
+WECOM_CORP_ID=wwxxxxxxxxxxxxxxxx
+WECOM_SECRET=xxxxxxxxxxxxxxxx
+WECOM_TOKEN=xxxxxxxxxxxxxxxx
+WECOM_ENCODING_AES_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+WECOM_OPEN_KFID=
+WECOM_SEARCH_LIMIT=5
+```
+
+说明：
+
+- `WECOM_CORP_ID` 和 `WECOM_SECRET` 用来获取企业微信客服 API 的 `access_token`
+- `WECOM_TOKEN` 和 `WECOM_ENCODING_AES_KEY` 用来校验并解密企业微信客服回调
+- `WECOM_OPEN_KFID` 可选，不填时程序优先使用回调事件中的客服账号
+- `WECOM_SEARCH_LIMIT` 控制微信客服自动回复时返回的结果条数
+
+### 先查询客服账号
+
+```bash
+curl -H "Authorization: Bearer your_http_api_token" \
+  "http://127.0.0.1:8090/api/wecom/accounts"
+```
+
+如果只有一个客服账号，通常可以不额外设置 `WECOM_OPEN_KFID`。
+
+### 回调地址配置
+
+在企业微信客服后台开发配置里填写：
+
+- 回调 URL：`https://your-domain.example/wecom/callback`
+- Token：填写 `WECOM_TOKEN`
+- EncodingAESKey：填写 `WECOM_ENCODING_AES_KEY`
+
+程序收到企业微信回调后会：
+
+1. 校验并解密回调
+2. 调用 `sync_msg` 拉取实际消息内容
+3. 仅对客户发来的文本消息执行 pansou 搜索
+4. 通过 `send_msg` 返回结果摘要
+
+### 部署提醒
+
+- 推荐让 `api_main.py` 只监听 `127.0.0.1`
+- 对外暴露时请通过 Nginx、Cloudflare Tunnel 或其他 HTTPS 网关转发
+- 如果企业微信自建应用启用了可信 IP，请把真实出口公网 IP 加进白名单，否则获取 `access_token` 或调用客服接口会失败
 
 ## ⚙️ PM2 管理命令
 

@@ -5,6 +5,23 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 并且本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.3.0] - 2026-03-19
+
+### 💼 企业微信客服接入
+
+### Added
+
+- 新增 `src/wecom_service.py`，支持企业微信客服回调验签、AES 解密、消息读取和自动回复
+- 新增 `/api/wecom/accounts`，可查询当前企业微信客服账号列表
+- 新增 `/wecom/callback`，可直接作为企业微信客服开发配置里的回调地址
+- 新增 `WECOM_CORP_ID`、`WECOM_SECRET`、`WECOM_TOKEN`、`WECOM_ENCODING_AES_KEY`、`WECOM_OPEN_KFID`、`WECOM_SEARCH_LIMIT` 配置项
+
+### Changed
+
+- HTTP API 健康检查现在会额外返回企业微信客服配置状态
+- 企业微信客服回调改为快速应答、后台异步处理，减少平台重试造成的重复请求
+- README 和 `.env.example` 补充企业微信客服接入说明、回调地址和账号查询用法
+
 ## [2.2.0] - 2026-03-19
 
 ### 🌐 Webhook 接入准备
