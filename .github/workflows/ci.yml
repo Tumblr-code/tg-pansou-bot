@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Secret scan
+        run: python scripts/secret_scan.py
+
+      - name: Compile Python files
+        run: python -m compileall .
+
+      - name: Smoke import test
+        run: python scripts/smoke_test.py
+
+      - name: Build Docker image
+        run: docker build -t tg-pansou-bot:ci .

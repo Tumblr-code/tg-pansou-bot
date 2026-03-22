@@ -83,6 +83,7 @@ ADMIN_IDS=your_admin_id
 HTTP_API_HOST=127.0.0.1
 HTTP_API_PORT=8090
 HTTP_API_TOKEN=replace_with_random_secret
+REQUIRE_HTTP_API_TOKEN=true
 
 # 企业微信客服（可选）
 WECOM_CORP_ID=
@@ -136,6 +137,8 @@ python api_main.py
 ```
 
 推荐只监听 `127.0.0.1`，再由 Nginx、Cloudflare Tunnel 或其他网关转发。
+
+默认情况下，`api_main.py` 启动时必须存在 `HTTP_API_TOKEN`；只有在你显式设置 `REQUIRE_HTTP_API_TOKEN=false` 时，才会允许无令牌访问（不推荐）。
 
 ## 📖 使用方法
 
@@ -195,7 +198,7 @@ HTTP API 适合提供给本机网关、企业微信客服适配层或其他 webh
 
 ### 鉴权方式
 
-如果配置了 `HTTP_API_TOKEN`，请求时需要携带以下任一请求头：
+默认情况下，HTTP API 会强制校验 `HTTP_API_TOKEN`。请求时需要携带以下任一请求头；只有在你显式设置 `REQUIRE_HTTP_API_TOKEN=false` 时，才会关闭这层鉴权：
 
 ```http
 Authorization: Bearer your_token

@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制代码
 COPY main.py .
+COPY api_main.py .
 COPY src/ ./src/
 
 # 创建非 root 用户

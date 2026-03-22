@@ -15,6 +15,12 @@ from http_api import create_app
 
 
 if __name__ == "__main__":
+    if settings.require_http_api_token and not settings.http_api_token:
+        raise SystemExit(
+            "HTTP API 已启用安全模式：请先配置 HTTP_API_TOKEN，"
+            "或显式设置 REQUIRE_HTTP_API_TOKEN=false 后再启动。"
+        )
+
     web.run_app(
         create_app(),
         host=settings.http_api_host,

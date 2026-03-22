@@ -121,7 +121,7 @@ def _flatten_results(
 def _is_authorized(request: web.Request) -> bool:
     expected_token = settings.http_api_token
     if not expected_token:
-        return True
+        return not settings.require_http_api_token
 
     auth_header = request.headers.get("Authorization", "")
     if auth_header.lower().startswith("bearer "):

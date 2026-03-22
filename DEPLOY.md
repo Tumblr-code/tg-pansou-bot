@@ -41,7 +41,7 @@ cd tg-pansou-bot
 2. 发送 `/newbot`
 3. 输入 Bot 名称（如：网盘搜索助手）
 4. 输入 Bot 用户名（必须以 bot 结尾，如：pansou_search_bot）
-5. 复制获得的 Token（格式：`123456789:ABCdefGHIjklMNOpqrsTUVwxyz`）
+5. 复制获得的 Token（格式示例：`123456789:<telegram_bot_token>`）
 
 ### 步骤 4：配置环境变量
 
@@ -53,7 +53,7 @@ nano .env
 填入你的配置：
 
 ```env
-TG_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+TG_BOT_TOKEN=123456789:<telegram_bot_token>
 PANSOU_API_URL=http://localhost:8888
 DEFAULT_RESULT_LIMIT=10
 MAX_RESULT_LIMIT=20

@@ -907,6 +907,103 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # ============ 搜索核心函数 ============
 
+async def _run_search_flow(
+    *,
+    keyword: str,
+    user_id: int,
+    chat_id: int,
+    edit_message,
+    message_id: int,
+    limit: Optional[int] = None,
+    cloud_types: Optional[list] = None,
+    source_type: Optional[str] = None,
+) -> None:
+    """统一处理普通搜索与回调触发的重新搜索。"""
+    user_settings = settings_manager.get_settings(user_id)
+
+    if limit is None:
+        limit = user_settings.result_limit
+    limit = min(limit, settings.max_result_limit)
+
+    if cloud_types is None:
+        cloud_types = user_settings.cloud_types
+
+    if source_type is None:
+        source_type = user_settings.source_type
+
+    filter_config = user_settings.get_filter_config()
+    safe_keyword = html.escape(keyword)
+
+    await edit_message(
+        f"🔍 正在搜索：<b>{safe_keyword}</b>...",
+        parse_mode=ParseMode.HTML,
+    )
+    schedule_message_deletion(chat_id, message_id)
+
+    try:
+        results = await pansou_client.search(
+            keyword=keyword,
+            channels=user_settings.channels if user_settings.channels else None,
+            plugins=user_settings.plugins if user_settings.plugins else None,
+            cloud_types=cloud_types,
+            source_type=source_type,
+            filter_config=filter_config,
+            limit=max(limit, 50),
+        )
+
+        if "error" in results:
+            safe_error = html.escape(str(results["error"]))
+            error_text = add_auto_delete_notice(f"❌ {safe_error}", ParseMode.HTML)
+            await edit_message(error_text, parse_mode=ParseMode.HTML)
+            schedule_message_deletion(chat_id, message_id)
+            return
+
+        merged_by_type = results.get("merged_by_type", {})
+        total = results.get("total", 0)
+
+        if not merged_by_type or total == 0:
+            empty_text = add_auto_delete_notice(f"🔍 未找到与「{safe_keyword}」相关的资源", ParseMode.HTML)
+            await edit_message(empty_text, parse_mode=ParseMode.HTML)
+            schedule_message_deletion(chat_id, message_id)
+            return
+
+        cache_key = f"{chat_id}:{user_id}"
+        search_cache.set(cache_key, {
+            "keyword": keyword,
+            "results": results,
+            "timestamp": time.time(),
+        })
+
+        overview_text = pansou_client.format_overview(results, keyword)
+        overview_text = add_auto_delete_notice(overview_text, ParseMode.HTML)
+        type_buttons = pansou_client.get_type_buttons(results)
+        keyboard = create_type_keyboard(type_buttons, cache_key)
+
+        await edit_message(
+            overview_text,
+            reply_markup=keyboard,
+            parse_mode=ParseMode.HTML,
+        )
+        schedule_message_deletion(chat_id, message_id)
+
+        logger.info(
+            "search_completed",
+            keyword=keyword,
+            user_id=user_id,
+            total=total,
+            types=list(merged_by_type.keys()),
+        )
+    except Exception as e:
+        logger.error("search_error", error=str(e), keyword=keyword)
+        safe_error = html.escape(str(e))
+        error_text = add_auto_delete_notice(
+            f"❌ 搜索出错：{safe_error}\n\n请稍后重试或使用 /status 检查服务状态",
+            ParseMode.HTML,
+        )
+        await edit_message(error_text, parse_mode=ParseMode.HTML)
+        schedule_message_deletion(chat_id, message_id)
+
+
 async def perform_search(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -918,102 +1015,29 @@ async def perform_search(
     """执行搜索并显示分类按钮"""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    user_settings = settings_manager.get_settings(user_id)
     allowed, retry_after = check_search_rate_limit(user_id)
     if not allowed:
         await reply_with_auto_delete(update, f"⏳ 搜索太频繁了，请在 {retry_after} 秒后再试")
         return
-    
-    if limit is None:
-        limit = user_settings.result_limit
-    limit = min(limit, settings.max_result_limit)
-    
-    if cloud_types is None:
-        cloud_types = user_settings.cloud_types
-    
-    if source_type is None:
-        source_type = user_settings.source_type
-    
-    filter_config = user_settings.get_filter_config()
-    safe_keyword = html.escape(keyword)
-    
-    # 发送搜索中提示
+
     search_message = await update.message.reply_text(
-        f"🔍 正在搜索：<b>{safe_keyword}</b>...",
-        parse_mode=ParseMode.HTML
+        f"🔍 正在搜索：<b>{html.escape(keyword)}</b>...",
+        parse_mode=ParseMode.HTML,
     )
-    
-    # 安排搜索结果消息自动删除
-    schedule_message_deletion(chat_id, search_message.message_id)
-    
-    try:
-        # 执行搜索
-        results = await pansou_client.search(
-            keyword=keyword,
-            channels=user_settings.channels if user_settings.channels else None,
-            plugins=user_settings.plugins if user_settings.plugins else None,
-            cloud_types=cloud_types,
-            source_type=source_type,
-            filter_config=filter_config,
-            limit=max(limit, 50)
-        )
-        
-        if "error" in results:
-            safe_error = html.escape(str(results["error"]))
-            error_text = add_auto_delete_notice(f"❌ {safe_error}", ParseMode.HTML)
-            await search_message.edit_text(error_text, parse_mode=ParseMode.HTML)
-            # 错误消息也需要自动删除
-            schedule_message_deletion(chat_id, search_message.message_id)
-            return
-        
-        merged_by_type = results.get("merged_by_type", {})
-        total = results.get("total", 0)
-        
-        if not merged_by_type or total == 0:
-            empty_text = add_auto_delete_notice(f"🔍 未找到与「{safe_keyword}」相关的资源", ParseMode.HTML)
-            await search_message.edit_text(empty_text, parse_mode=ParseMode.HTML)
-            # 空结果消息也需要自动删除
-            schedule_message_deletion(chat_id, search_message.message_id)
-            return
-        
-        # 保存结果到缓存
-        cache_key = f"{chat_id}:{user_id}"
-        search_cache.set(cache_key, {
-            "keyword": keyword,
-            "results": results,
-            "timestamp": time.time()
-        })
-        
-        overview_text = pansou_client.format_overview(results, keyword)
-        overview_text = add_auto_delete_notice(overview_text, ParseMode.HTML)
-        
-        type_buttons = pansou_client.get_type_buttons(results)
-        keyboard = create_type_keyboard(type_buttons, cache_key)
-        
-        await search_message.edit_text(
-            overview_text,
-            reply_markup=keyboard,
-            parse_mode=ParseMode.HTML
-        )
-        
-        # 更新删除计划（编辑消息后仍保持自动删除）
-        schedule_message_deletion(chat_id, search_message.message_id)
-        
-        logger.info(
-            "search_completed",
-            keyword=keyword,
-            user_id=user_id,
-            total=total,
-            types=list(merged_by_type.keys())
-        )
-        
-    except Exception as e:
-        logger.error("search_error", error=str(e), keyword=keyword)
-        await search_message.edit_text(
-            f"❌ 搜索出错：{str(e)}\n\n请稍后重试或使用 /status 检查服务状态"
-        )
-        # 错误消息也需要自动删除
-        schedule_message_deletion(chat_id, search_message.message_id)
+
+    async def _edit_message(text: str, **kwargs):
+        return await search_message.edit_text(text, **kwargs)
+
+    await _run_search_flow(
+        keyword=keyword,
+        user_id=user_id,
+        chat_id=chat_id,
+        edit_message=_edit_message,
+        message_id=search_message.message_id,
+        limit=limit,
+        cloud_types=cloud_types,
+        source_type=source_type,
+    )
 
 
 async def perform_search_from_callback(
@@ -1027,99 +1051,19 @@ async def perform_search_from_callback(
     source_type: Optional[str] = None
 ) -> None:
     """从回调查询执行搜索（用于重新搜索功能）"""
-    user_settings = settings_manager.get_settings(user_id)
-    message_id = query.message.message_id
-    
-    if limit is None:
-        limit = user_settings.result_limit
-    limit = min(limit, settings.max_result_limit)
-    
-    if cloud_types is None:
-        cloud_types = user_settings.cloud_types
-    
-    if source_type is None:
-        source_type = user_settings.source_type
-    
-    filter_config = user_settings.get_filter_config()
-    safe_keyword = html.escape(keyword)
-    
-    # 更新消息为搜索中状态
-    await query.edit_message_text(
-        f"🔍 正在搜索：<b>{safe_keyword}</b>...",
-        parse_mode=ParseMode.HTML
+    async def _edit_message(text: str, **kwargs):
+        return await query.edit_message_text(text, **kwargs)
+
+    await _run_search_flow(
+        keyword=keyword,
+        user_id=user_id,
+        chat_id=chat_id,
+        edit_message=_edit_message,
+        message_id=query.message.message_id,
+        limit=limit,
+        cloud_types=cloud_types,
+        source_type=source_type,
     )
-    
-    # 安排消息自动删除
-    schedule_message_deletion(chat_id, message_id)
-    
-    try:
-        # 执行搜索
-        results = await pansou_client.search(
-            keyword=keyword,
-            channels=user_settings.channels if user_settings.channels else None,
-            plugins=user_settings.plugins if user_settings.plugins else None,
-            cloud_types=cloud_types,
-            source_type=source_type,
-            filter_config=filter_config,
-            limit=max(limit, 50)
-        )
-        
-        if "error" in results:
-            safe_error = html.escape(str(results["error"]))
-            error_text = add_auto_delete_notice(f"❌ {safe_error}", ParseMode.HTML)
-            await query.edit_message_text(error_text, parse_mode=ParseMode.HTML)
-            schedule_message_deletion(chat_id, message_id)
-            return
-        
-        merged_by_type = results.get("merged_by_type", {})
-        total = results.get("total", 0)
-        
-        if not merged_by_type or total == 0:
-            empty_text = add_auto_delete_notice(f"🔍 未找到与「{safe_keyword}」相关的资源", ParseMode.HTML)
-            await query.edit_message_text(empty_text, parse_mode=ParseMode.HTML)
-            schedule_message_deletion(chat_id, message_id)
-            return
-        
-        # 保存结果到缓存
-        cache_key = f"{chat_id}:{user_id}"
-        search_cache.set(cache_key, {
-            "keyword": keyword,
-            "results": results,
-            "timestamp": time.time()
-        })
-        
-        overview_text = pansou_client.format_overview(results, keyword)
-        overview_text = add_auto_delete_notice(overview_text, ParseMode.HTML)
-        
-        type_buttons = pansou_client.get_type_buttons(results)
-        keyboard = create_type_keyboard(type_buttons, cache_key)
-        
-        await query.edit_message_text(
-            overview_text,
-            reply_markup=keyboard,
-            parse_mode=ParseMode.HTML
-        )
-        
-        # 更新删除计划（编辑消息后仍保持自动删除）
-        schedule_message_deletion(chat_id, message_id)
-        
-        logger.info(
-            "search_completed",
-            keyword=keyword,
-            user_id=user_id,
-            total=total,
-            types=list(merged_by_type.keys())
-        )
-        
-    except Exception as e:
-        logger.error("search_error", error=str(e), keyword=keyword)
-        safe_error = html.escape(str(e))
-        error_text = add_auto_delete_notice(
-            f"❌ 搜索出错：{safe_error}\n\n请稍后重试或使用 /status 检查服务状态",
-            ParseMode.HTML
-        )
-        await query.edit_message_text(error_text, parse_mode=ParseMode.HTML)
-        schedule_message_deletion(chat_id, message_id)
 
 
 def create_type_keyboard(type_buttons: list, cache_key: str, page: int = 1) -> InlineKeyboardMarkup:

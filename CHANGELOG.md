@@ -5,6 +5,29 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 并且本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 🔐 安全基线与工程化
+
+### Added
+
+- 新增 GitHub Actions CI，包含 secret scan、Python 编译检查、smoke import test 和 Docker build 校验
+- 新增 `scripts/secret_scan.py`，阻止 `.env.*` 备份文件和明显的 Telegram Bot Token 被提交
+- 新增 `scripts/smoke_test.py`，在不启动真实 Bot 的前提下验证核心模块可导入
+- 新增 `REQUIRE_HTTP_API_TOKEN` 配置项，用于显式控制 HTTP API 是否允许无令牌访问
+
+### Changed
+
+- `api_main.py` 在安全模式下若未配置 `HTTP_API_TOKEN` 会直接拒绝启动
+- `src/http_api.py` 默认改为要求令牌鉴权，只有显式关闭安全模式时才允许匿名访问
+- `src/bot.py` 抽出统一搜索流程，减少普通搜索与回调重搜之间的重复逻辑
+- `.gitignore` 增强为忽略 `.env.*` 和 `.env.backup*` 变体，避免敏感文件误提交
+- README 与 `.env.example` 补充 HTTP API 安全默认值和本地检查说明
+
+### Fixed
+
+- 移除误加入仓库的 `.env.backup.20260228_200505` 敏感备份文件
+
 ## [2.3.0] - 2026-03-19
 
 ### 💼 企业微信客服接入
