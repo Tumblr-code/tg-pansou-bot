@@ -250,6 +250,60 @@ async def _run_command(
     )
 
 
+def _looks_like_git_tls_error(detail: str) -> bool:
+    """判断 Git HTTPS 请求是否命中了常见 TLS/HTTP2 传输错误。"""
+    lowered = detail.lower()
+    indicators = (
+        "gnutls_handshake()",
+        "tls connection was non-properly terminated",
+        "http/2 stream",
+        "http2 stream",
+        "curl 56",
+        "remote end hung up unexpectedly",
+        "recv failure",
+        "connection reset by peer",
+    )
+    return any(indicator in lowered for indicator in indicators)
+
+
+async def _run_git_command(
+    *args: str,
+    timeout: int = UPDATE_COMMAND_TIMEOUT,
+    cwd: Path = REPO_ROOT,
+) -> tuple[int, str, str]:
+    """运行 Git 命令，遇到 TLS 抖动时自动降级到 HTTP/1.1 重试。"""
+    commands = [
+        ("default", ("git", *args)),
+        (
+            "http1_fallback",
+            (
+                "git",
+                "-c",
+                "http.version=HTTP/1.1",
+                "-c",
+                "http.maxRequests=1",
+                *args,
+            ),
+        ),
+    ]
+
+    last_result = (1, "", "")
+    for mode, command in commands:
+        code, stdout, stderr = await _run_command(*command, timeout=timeout, cwd=cwd)
+        if code == 0:
+            return code, stdout, stderr
+
+        last_result = (code, stdout, stderr)
+        detail = "\n".join(part for part in (stderr, stdout) if part)
+        if mode == "default" and _looks_like_git_tls_error(detail):
+            logger.warning("git_command_retry_with_http1", args=list(args), error=detail)
+            await asyncio.sleep(1)
+            continue
+        break
+
+    return last_result
+
+
 async def _restart_process(delay_seconds: float = 1.0) -> None:
     """延迟重启当前进程，让 Telegram 消息先发出去。"""
     await asyncio.sleep(delay_seconds)
@@ -729,7 +783,7 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         parse_mode=ParseMode.HTML,
     )
 
-    code, fetch_output, fetch_error = await _run_command("git", "fetch", "origin", branch)
+    code, fetch_output, fetch_error = await _run_git_command("fetch", "origin", branch)
     if code != 0:
         detail = html.escape(_truncate_output(fetch_error or fetch_output or "git fetch 失败"))
         text = add_auto_delete_notice(
@@ -771,9 +825,9 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         parse_mode=ParseMode.HTML,
     )
 
-    code, pull_output, pull_error = await _run_command("git", "pull", "--ff-only", "origin", branch)
+    code, pull_output, pull_error = await _run_command("git", "merge", "--ff-only", f"origin/{branch}")
     if code != 0:
-        detail = html.escape(_truncate_output(pull_error or pull_output or "git pull 失败"))
+        detail = html.escape(_truncate_output(pull_error or pull_output or "git merge 失败"))
         text = add_auto_delete_notice(
             f"❌ 更新代码失败\n\n<code>{detail}</code>",
             ParseMode.HTML,
