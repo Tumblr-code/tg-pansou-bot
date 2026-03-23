@@ -13,6 +13,7 @@ from collections import OrderedDict, deque
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -185,6 +186,17 @@ def schedule_message_deletion(chat_id: int, message_id: int, delay: int = AUTO_D
     key = (chat_id, message_id)
     _deletion_tasks[key] = asyncio.get_event_loop().time() + delay
     _ensure_cleanup_worker()
+
+
+async def _safe_edit_message(edit_message, text: str, **kwargs):
+    # Ignore Telegram no-op edits when the content is unchanged.
+    try:
+        return await edit_message(text, **kwargs)
+    except BadRequest as exc:
+        if "Message is not modified" in str(exc):
+            logger.debug("ignored_message_not_modified")
+            return None
+        raise
 
 
 def add_auto_delete_notice(text: str, parse_mode: Optional[str] = None) -> str:
@@ -934,7 +946,8 @@ async def _run_search_flow(
     filter_config = user_settings.get_filter_config()
     safe_keyword = html.escape(keyword)
 
-    await edit_message(
+    await _safe_edit_message(
+        edit_message,
         f"🔍 正在搜索：<b>{safe_keyword}</b>...",
         parse_mode=ParseMode.HTML,
     )
@@ -954,7 +967,7 @@ async def _run_search_flow(
         if "error" in results:
             safe_error = html.escape(str(results["error"]))
             error_text = add_auto_delete_notice(f"❌ {safe_error}", ParseMode.HTML)
-            await edit_message(error_text, parse_mode=ParseMode.HTML)
+            await _safe_edit_message(edit_message, error_text, parse_mode=ParseMode.HTML)
             schedule_message_deletion(chat_id, message_id)
             return
 
@@ -963,7 +976,7 @@ async def _run_search_flow(
 
         if not merged_by_type or total == 0:
             empty_text = add_auto_delete_notice(f"🔍 未找到与「{safe_keyword}」相关的资源", ParseMode.HTML)
-            await edit_message(empty_text, parse_mode=ParseMode.HTML)
+            await _safe_edit_message(edit_message, empty_text, parse_mode=ParseMode.HTML)
             schedule_message_deletion(chat_id, message_id)
             return
 
@@ -979,7 +992,8 @@ async def _run_search_flow(
         type_buttons = pansou_client.get_type_buttons(results)
         keyboard = create_type_keyboard(type_buttons, cache_key)
 
-        await edit_message(
+        await _safe_edit_message(
+            edit_message,
             overview_text,
             reply_markup=keyboard,
             parse_mode=ParseMode.HTML,
@@ -1000,7 +1014,7 @@ async def _run_search_flow(
             f"❌ 搜索出错：{safe_error}\n\n请稍后重试或使用 /status 检查服务状态",
             ParseMode.HTML,
         )
-        await edit_message(error_text, parse_mode=ParseMode.HTML)
+        await _safe_edit_message(edit_message, error_text, parse_mode=ParseMode.HTML)
         schedule_message_deletion(chat_id, message_id)
 
 
@@ -1359,19 +1373,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理错误"""
-    logger.error("bot_error", error=str(context.error), update=update)
-    
+    error_text = str(context.error)
+
+    # Ignore no-op edits where Telegram reports identical content.
+    if "Message is not modified" in error_text:
+        logger.debug("ignored_message_not_modified")
+        return
+
+    logger.error("bot_error", error=error_text, update=update)
+
     if update and update.effective_message:
         try:
-            error_text = add_auto_delete_notice(
-                "❌ 发生错误，请稍后重试\n"
-                "如果问题持续存在，请联系管理员",
+            notice_text = add_auto_delete_notice(
+                """❌ 发生错误，请稍后重试
+如果问题持续存在，请联系管理员""",
                 None
             )
-            error_msg = await update.effective_message.reply_text(error_text)
+            error_msg = await update.effective_message.reply_text(notice_text)
             auto_delete_message(error_msg)
         except Exception:
             pass
+
 
 
 # ============ 应用构建 ============
