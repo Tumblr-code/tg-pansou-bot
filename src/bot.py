@@ -215,6 +215,11 @@ def check_search_rate_limit(user_id: int) -> tuple[bool, int]:
     return search_rate_limiter.check(user_id)
 
 
+def _build_search_cache_key(chat_id: int, user_id: int, message_id: int) -> str:
+    """为每条搜索结果消息生成独立缓存键，避免多次搜索互相覆盖。"""
+    return f"{chat_id}:{user_id}:{message_id}"
+
+
 def _truncate_output(text: str, limit: int = MAX_COMMAND_OUTPUT) -> str:
     """截断命令输出，避免消息过长。"""
     cleaned = text.strip()
@@ -525,11 +530,11 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if args[0] == "limit" and len(args) > 1:
         try:
             limit = int(args[1])
-            if 1 <= limit <= 50:
+            if 1 <= limit <= settings.max_result_limit:
                 settings_manager.update_settings(user_id, result_limit=limit)
                 await reply_with_auto_delete(update, f"✅ 结果数量限制已设置为 {limit}")
             else:
-                await reply_with_auto_delete(update, "❌ 限制范围：1-50")
+                await reply_with_auto_delete(update, f"❌ 限制范围：1-{settings.max_result_limit}")
         except ValueError:
             await reply_with_auto_delete(update, "❌ 请输入数字")
         return
@@ -641,19 +646,19 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理 /status 命令"""
+    if not check_admin_permission(update):
+        await reply_with_auto_delete(update, "⛔️ 该命令仅限管理员使用")
+        return
+
     user_id = update.effective_user.id
-    is_user_admin = is_admin(user_id)
-    
     message = await update.message.reply_text("🔄 正在检查服务状态...")
     auto_delete_message(message)
     
     is_healthy = await pansou_client.health_check()
     
     if is_healthy:
-        if is_user_admin:
-            # 管理员看到完整状态
-            user_settings = settings_manager.get_settings(user_id)
-            status_text = f"""✅ <b>服务状态正常</b>
+        user_settings = settings_manager.get_settings(user_id)
+        status_text = f"""✅ <b>服务状态正常</b>
 
 🤖 Bot: 运行中
 🔍 Pansou API: 正常
@@ -666,14 +671,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 ❌ 排除过滤: {len(user_settings.filter_exclude)}个
 
 👑 你是管理员"""
-        else:
-            # 普通用户只看到简单状态
-            status_text = """✅ <b>服务状态正常</b>
-
-🤖 Bot: 运行中
-🔍 Pansou API: 正常
-
-💡 可以直接发送关键词进行搜索！"""
     else:
         status_text = """⚠️ <b>服务异常</b>
 
@@ -989,7 +986,7 @@ async def _run_search_flow(
 
     if limit is None:
         limit = user_settings.result_limit
-    limit = min(limit, settings.max_result_limit)
+    limit = max(1, min(limit, settings.max_result_limit))
 
     if cloud_types is None:
         cloud_types = user_settings.cloud_types
@@ -1015,7 +1012,7 @@ async def _run_search_flow(
             cloud_types=cloud_types,
             source_type=source_type,
             filter_config=filter_config,
-            limit=max(limit, 50),
+            limit=limit,
         )
 
         if "error" in results:
@@ -1034,7 +1031,7 @@ async def _run_search_flow(
             schedule_message_deletion(chat_id, message_id)
             return
 
-        cache_key = f"{chat_id}:{user_id}"
+        cache_key = _build_search_cache_key(chat_id, user_id, message_id)
         search_cache.set(cache_key, {
             "keyword": keyword,
             "results": results,
@@ -1185,13 +1182,31 @@ def _parse_type_callback(data: str) -> tuple[Optional[str], Optional[str], Optio
         return None, None, None
 
 
-def _is_cache_owner(cache_key: str, chat_id: int, user_id: int) -> bool:
+def _is_cache_owner(
+    cache_key: str,
+    chat_id: int,
+    user_id: int,
+    message_id: Optional[int] = None,
+) -> bool:
     """校验回调是否来自原搜索用户。"""
     try:
-        cached_chat_id, cached_user_id = cache_key.split(":", 1)
-        return int(cached_chat_id) == chat_id and int(cached_user_id) == user_id
+        parts = cache_key.split(":")
+        if len(parts) == 3:
+            cached_chat_id, cached_user_id, cached_message_id = parts
+            if message_id is None:
+                return False
+            return (
+                int(cached_chat_id) == chat_id
+                and int(cached_user_id) == user_id
+                and int(cached_message_id) == message_id
+            )
+
+        if len(parts) == 2:
+            cached_chat_id, cached_user_id = parts
+            return int(cached_chat_id) == chat_id and int(cached_user_id) == user_id
     except (TypeError, ValueError):
-        return False
+        pass
+    return False
 
 
 def create_pagination_keyboard(
@@ -1254,11 +1269,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
+    message_id = query.message.message_id if query.message else None
+    if message_id is None:
+        await query.answer("❌ 搜索消息不可用", show_alert=True)
+        return
     
     # 处理刷新
     if data.startswith("refresh:"):
         cache_key = _parse_cache_key_from_action(data, "refresh:")
-        if not cache_key or not _is_cache_owner(cache_key, chat_id, user_id):
+        if not cache_key or not _is_cache_owner(cache_key, chat_id, user_id, message_id):
             await query.answer("⚠️ 只能操作你自己发起的搜索", show_alert=True)
             return
 
@@ -1294,7 +1313,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # 处理显示全部
     if data.startswith("all:"):
         cache_key = _parse_cache_key_from_action(data, "all:")
-        if not cache_key or not _is_cache_owner(cache_key, chat_id, user_id):
+        if not cache_key or not _is_cache_owner(cache_key, chat_id, user_id, message_id):
             await query.answer("⚠️ 只能操作你自己发起的搜索", show_alert=True)
             return
 
@@ -1335,7 +1354,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # 处理返回分类
     if data.startswith("back:"):
         cache_key = _parse_cache_key_from_action(data, "back:")
-        if not cache_key or not _is_cache_owner(cache_key, chat_id, user_id):
+        if not cache_key or not _is_cache_owner(cache_key, chat_id, user_id, message_id):
             await query.answer("⚠️ 只能操作你自己发起的搜索", show_alert=True)
             return
 
@@ -1373,7 +1392,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.answer("❌ 参数错误")
             return
 
-        if not _is_cache_owner(cache_key, chat_id, user_id):
+        if not _is_cache_owner(cache_key, chat_id, user_id, message_id):
             await query.answer("⚠️ 只能操作你自己发起的搜索", show_alert=True)
             return
 

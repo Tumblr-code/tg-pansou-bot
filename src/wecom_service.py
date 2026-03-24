@@ -377,7 +377,7 @@ class WeComClient:
         if total <= 0:
             return f"没有找到与「{keyword_text}」相关的资源，请换个关键词试试。"
 
-        item_limit = max(1, min(settings.wecom_search_limit, 5))
+        item_limit = settings.wecom_search_limit
         items = self._flatten_items(results, item_limit=item_limit)
         lines = [f"「{keyword_text}」共找到 {total} 条资源，先给你 {len(items)} 条：", ""]
 
@@ -439,7 +439,7 @@ class WeComClient:
             return
 
         logger.info("wecom_search_request", open_kfid=open_kfid, external_userid=external_userid, keyword=keyword)
-        results = await pansou_client.search(keyword=keyword, limit=max(settings.wecom_search_limit, 5))
+        results = await pansou_client.search(keyword=keyword, limit=settings.wecom_search_limit)
         reply_text = self._format_search_reply(keyword, results)
         await self.send_text_message(touser=external_userid, open_kfid=open_kfid, content=reply_text)
 
