@@ -5,13 +5,14 @@ Telegram Bot 主模块 - 支持分类按钮
 import asyncio
 import html
 import os
+import shlex
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from collections import OrderedDict, deque
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from telegram import BotCommand, Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import (
@@ -35,6 +36,7 @@ ENTRYPOINT = REPO_ROOT / "main.py"
 UPDATE_COMMAND_TIMEOUT = 300
 PIP_INSTALL_TIMEOUT = 600
 MAX_COMMAND_OUTPUT = 1200
+MAX_LIST_MESSAGE_LENGTH = 3300
 
 
 class LRUCache:
@@ -139,6 +141,21 @@ AUTO_DELETE_DELAY = 180  # 3分钟
 # 后台任务队列 - 使用字典优化查找速度
 _deletion_tasks = {}
 _cleanup_task = None
+
+BOT_COMMANDS = [
+    BotCommand("search", "搜索资源"),
+    BotCommand("s", "群组内搜索资源"),
+    BotCommand("help", "查看帮助"),
+    BotCommand("settings", "查看或修改搜索设置"),
+    BotCommand("types", "查看支持网盘类型"),
+    BotCommand("sources", "查看来源概况"),
+    BotCommand("plugins", "查看启用插件"),
+    BotCommand("channels", "查看启用频道"),
+    BotCommand("filter", "管理关键词过滤"),
+    BotCommand("reset", "重置搜索设置"),
+    BotCommand("status", "检查服务状态"),
+    BotCommand("refresh", "刷新运行时缓存"),
+]
 
 async def _cleanup_worker():
     """后台清理工作器，批量处理消息删除"""
@@ -352,6 +369,118 @@ def check_admin_permission(update: Update) -> bool:
     return True
 
 
+def _parse_csv_values(raw: str) -> list[str]:
+    """解析逗号分隔列表，兼容多余空格。"""
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _format_compact_list(values: list[str], *, limit: int = MAX_LIST_MESSAGE_LENGTH) -> str:
+    """把较长列表压缩为 Telegram 能稳定发送的文本。"""
+    if not values:
+        return "无"
+
+    lines: list[str] = []
+    current_length = 0
+    for value in values:
+        item = f"<code>{html.escape(str(value))}</code>"
+        extra = len(item) + (2 if lines else 0)
+        if current_length + extra > limit:
+            remaining = len(values) - len(lines)
+            lines.append(f"... 还有 {remaining} 个")
+            break
+        lines.append(item)
+        current_length += extra
+    return ", ".join(lines)
+
+
+def _get_list_arg(args: list[str], start_index: int = 1) -> str:
+    """把命令参数中列表部分重新拼回字符串。"""
+    return " ".join(args[start_index:]).strip()
+
+
+async def _get_pansou_lists(force_refresh: bool = False) -> tuple[list[str], list[str]]:
+    """从 Pansou API 获取当前启用插件和频道。"""
+    info = await pansou_client.get_service_info(force_refresh=force_refresh)
+    plugins = sorted(str(item) for item in info.get("plugins", []) if str(item).strip())
+    channels = sorted(str(item) for item in info.get("channels", []) if str(item).strip())
+    return plugins, channels
+
+
+def _validate_values(values: list[str], available: list[str]) -> tuple[list[str], list[str]]:
+    """校验用户输入列表；如果没有可用列表，则只做去空和去重。"""
+    if not available:
+        return list(dict.fromkeys(values)), []
+
+    available_set = set(available)
+    valid = [value for value in values if value in available_set]
+    invalid = [value for value in values if value not in available_set]
+    return list(dict.fromkeys(valid)), list(dict.fromkeys(invalid))
+
+
+def _parse_search_options(raw_text: str) -> tuple[str, dict[str, Any], Optional[str]]:
+    """解析 /search 参数，支持 --src/--types/--plugins/--channels/--limit/--refresh。"""
+    try:
+        tokens = shlex.split(raw_text)
+    except ValueError as exc:
+        return "", {}, f"参数格式错误：{exc}"
+
+    keyword_parts: list[str] = []
+    options: dict[str, Any] = {}
+    index = 0
+
+    def next_value(option: str) -> Optional[str]:
+        nonlocal index
+        if index + 1 >= len(tokens):
+            return None
+        index += 1
+        return tokens[index]
+
+    while index < len(tokens):
+        token = tokens[index]
+        key = token
+        value: Optional[str] = None
+
+        if token.startswith("--") and "=" in token:
+            key, value = token.split("=", 1)
+
+        if key in ("--refresh", "-r"):
+            options["force_refresh"] = True
+        elif key in ("--src", "--source"):
+            value = value if value is not None else next_value(key)
+            if value not in ("all", "tg", "plugin"):
+                return "", {}, "搜索来源只能是 all、tg 或 plugin"
+            options["source_type"] = value
+        elif key in ("--types", "--cloud-types"):
+            value = value if value is not None else next_value(key)
+            if not value:
+                return "", {}, "缺少网盘类型参数"
+            options["cloud_types"] = [] if value.lower() in ("all", "全部") else _parse_csv_values(value)
+        elif key == "--plugins":
+            value = value if value is not None else next_value(key)
+            if not value:
+                return "", {}, "缺少插件参数"
+            options["plugins"] = [] if value.lower() in ("all", "全部") else _parse_csv_values(value)
+        elif key == "--channels":
+            value = value if value is not None else next_value(key)
+            if not value:
+                return "", {}, "缺少频道参数"
+            options["channels"] = [] if value.lower() in ("all", "全部") else _parse_csv_values(value)
+        elif key == "--limit":
+            value = value if value is not None else next_value(key)
+            try:
+                options["limit"] = int(value or "")
+            except ValueError:
+                return "", {}, "limit 必须是数字"
+        elif token.startswith("-"):
+            return "", {}, f"未知参数：{token}"
+        else:
+            keyword_parts.append(token)
+        index += 1
+
+    keyword = " ".join(keyword_parts).strip()
+    return keyword, options, None
+
+
 # ============ 命令处理函数 ============
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -369,17 +498,22 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 <b>🎯 使用方式：</b>
 • 直接发送关键词，如：<code>复仇者联盟</code>
 • 使用命令： <code>/search 钢铁侠</code>
+• 群里使用：<code>/s 钢铁侠</code>
 
 <b>✨ 特色功能：</b>
 • 📂 搜索结果分类显示，按需查看
-• 🔍 支持 12 种网盘类型筛选
+• 🔍 支持多种网盘类型筛选
 • ⚙️ 个人设置持久化
 • 🔗 一键复制链接和密码
 
 <b>🔧 管理员命令：</b>
 /settings - 查看/修改个人设置
 /types - 查看支持的网盘类型
+/sources - 查看来源概况
+/plugins - 查看/设置插件来源
+/channels - 查看/设置频道来源
 /filter - 设置搜索过滤器
+/reset - 重置搜索设置
 /status - 检查服务状态
 /refresh - 刷新运行时状态
 /update - 拉取最新代码并重启
@@ -395,9 +529,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 <b>🎯 使用方式：</b>
 • 直接发送关键词，如：<code>复仇者联盟</code>
 • 使用命令： <code>/search 钢铁侠</code>
+• 群里使用：<code>/s 钢铁侠</code>
 
 <b>📁 支持的网盘：</b>
-百度、阿里、夸克、天翼、UC、115、PikPak、迅雷、123、磁力、电驴
+百度、阿里、夸克、光鸭、天翼、UC、115、PikPak、迅雷、123、微云、蓝奏、坚果云、磁力、电驴
 
 💡 <b>提示：</b>搜索后会显示网盘类型按钮，点击即可查看结果
 
@@ -418,6 +553,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 <b>🔍 基础搜索</b>
 • 直接发送： <code>复仇者联盟</code>
 • 命令搜索： <code>/search 钢铁侠</code>
+• 群聊搜索： <code>/s 钢铁侠</code>
+• 指定来源： <code>/search 钢铁侠 --src plugin --plugins panta,wanou --types quark,aliyun --limit 10 --refresh</code>
 
 <b>📂 分类查看</b>
 搜索后会显示网盘类型按钮，点击即可查看该类型的资源：
@@ -427,6 +564,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 <b>⚙️ 设置管理</b>
 • <code>/settings</code> - 查看设置
 • <code>/settings types baidu,quark</code> - 设置默认网盘
+• <code>/settings plugins panta,wanou</code> - 设置默认插件
+• <code>/settings channels tgsearchers4</code> - 设置默认频道
 • <code>/settings limit 15</code> - 设置结果数量
 • <code>/settings reset</code> - 重置设置
 
@@ -437,11 +576,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 <b>♻️ 运行维护</b>
 • <code>/status</code> - 查看服务状态
+• <code>/sources</code> - 查看来源概况
+• <code>/plugins</code> - 查看启用插件
+• <code>/channels</code> - 查看启用频道
+• <code>/reset</code> - 重置搜索设置
 • <code>/refresh</code> - 刷新缓存和连接状态
 • <code>/update</code> - 拉取最新代码并重启
 
 <b>📁 支持的网盘</b>
-百度、阿里、夸克、天翼、UC、115、PikPak、迅雷、123、磁力、电驴"""
+百度、阿里、夸克、光鸭、天翼、UC、115、PikPak、迅雷、123、微云、蓝奏、坚果云、磁力、电驴"""
     else:
         # 普通用户只看到简单帮助
         help_text = """<b>📖 使用帮助</b>
@@ -449,6 +592,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 <b>🔍 基础搜索</b>
 • 直接发送关键词，如：<code>复仇者联盟</code>
 • 使用命令：<code>/search 钢铁侠</code>
+• 群里使用：<code>/s 钢铁侠</code>
 
 <b>📂 分类查看</b>
 搜索后会显示网盘类型按钮，点击即可查看该类型的资源：
@@ -456,7 +600,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 🔵 阿里云盘 (5)   🧲 磁力链接 (3)
 
 <b>📁 支持的网盘</b>
-百度、阿里、夸克、天翼、UC、115、PikPak、迅雷、123、磁力、电驴
+百度、阿里、夸克、光鸭、天翼、UC、115、PikPak、迅雷、123、微云、蓝奏、坚果云、磁力、电驴
 
 💡 发送关键词即可开始搜索！"""
     
@@ -481,6 +625,73 @@ async def types_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await reply_with_auto_delete(update, "\n".join(lines), parse_mode=ParseMode.HTML)
 
 
+async def plugins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理 /plugins 命令 - 显示当前 Pansou API 启用插件。"""
+    if not check_admin_permission(update):
+        await reply_with_auto_delete(update, "⛔️ 该命令仅限管理员使用")
+        return
+
+    plugins, _ = await _get_pansou_lists(force_refresh=True)
+    text = (
+        f"🔌 <b>当前启用插件</b>\n\n"
+        f"数量: <code>{len(plugins)}</code>\n\n"
+        f"{_format_compact_list(plugins)}\n\n"
+        "<b>设置示例：</b>\n"
+        "<code>/settings plugins panta,wanou,quark4k</code>\n"
+        "<code>/settings plugins all</code>"
+    )
+    await reply_with_auto_delete(update, text, parse_mode=ParseMode.HTML)
+
+
+async def channels_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理 /channels 命令 - 显示当前 Pansou API 启用频道。"""
+    if not check_admin_permission(update):
+        await reply_with_auto_delete(update, "⛔️ 该命令仅限管理员使用")
+        return
+
+    _, channels = await _get_pansou_lists(force_refresh=True)
+    text = (
+        f"📡 <b>当前启用频道</b>\n\n"
+        f"数量: <code>{len(channels)}</code>\n\n"
+        f"{_format_compact_list(channels)}\n\n"
+        "<b>设置示例：</b>\n"
+        "<code>/settings channels tgsearchers4,Aliyun_4K_Movies</code>\n"
+        "<code>/settings channels all</code>"
+    )
+    await reply_with_auto_delete(update, text, parse_mode=ParseMode.HTML)
+
+
+async def sources_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理 /sources 命令 - 汇总当前 Pansou API 来源配置。"""
+    if not check_admin_permission(update):
+        await reply_with_auto_delete(update, "⛔️ 该命令仅限管理员使用")
+        return
+
+    plugins, channels = await _get_pansou_lists(force_refresh=True)
+    text = (
+        "🧭 <b>来源概况</b>\n\n"
+        f"🔌 插件: <code>{len(plugins)}</code> 个\n"
+        f"📡 频道: <code>{len(channels)}</code> 个\n\n"
+        "<b>常用命令：</b>\n"
+        "<code>/plugins</code> 查看插件列表\n"
+        "<code>/channels</code> 查看频道列表\n"
+        "<code>/settings source all</code> 搜索全部来源\n"
+        "<code>/settings source plugin</code> 只搜插件\n"
+        "<code>/settings source tg</code> 只搜频道"
+    )
+    await reply_with_auto_delete(update, text, parse_mode=ParseMode.HTML)
+
+
+async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理 /reset 命令 - 快速重置当前用户搜索设置。"""
+    if not check_admin_permission(update):
+        await reply_with_auto_delete(update, "⛔️ 该命令仅限管理员使用")
+        return
+
+    settings_manager.reset_settings(update.effective_user.id)
+    await reply_with_auto_delete(update, "✅ 搜索设置已恢复默认：全部来源、全部网盘、全部插件和频道")
+
+
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理 /settings 命令 - 管理用户设置（仅管理员）"""
     if not check_admin_permission(update):
@@ -501,8 +712,13 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     
     if args[0] == "types" and len(args) > 1:
-        types_str = args[1]
-        cloud_types = [t.strip() for t in types_str.split(",") if t.strip()]
+        types_str = _get_list_arg(args)
+        if types_str.lower() in ("all", "clear", "全部"):
+            settings_manager.update_settings(user_id, cloud_types=[])
+            await reply_with_auto_delete(update, "✅ 网盘类型已设置为：全部")
+            return
+
+        cloud_types = _parse_csv_values(types_str)
         
         valid_types = []
         invalid_types = []
@@ -524,6 +740,54 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 update,
                 f"❌ 无效的类型：{', '.join(invalid_types)}\n"
                 f"使用 /types 查看支持的类型"
+            )
+        return
+
+    if args[0] == "plugins" and len(args) > 1:
+        plugins_str = _get_list_arg(args)
+        if plugins_str.lower() in ("all", "clear", "全部"):
+            settings_manager.update_settings(user_id, plugins=[])
+            await reply_with_auto_delete(update, "✅ 插件来源已设置为：全部启用插件")
+            return
+
+        requested_plugins = _parse_csv_values(plugins_str)
+        available_plugins, _ = await _get_pansou_lists()
+        valid_plugins, invalid_plugins = _validate_values(requested_plugins, available_plugins)
+        if valid_plugins:
+            settings_manager.update_settings(user_id, plugins=valid_plugins)
+            msg = f"✅ 已设置插件来源：{', '.join(valid_plugins)}"
+            if invalid_plugins:
+                msg += f"\n⚠️ 无效插件：{', '.join(invalid_plugins)}"
+            await reply_with_auto_delete(update, msg)
+        else:
+            await reply_with_auto_delete(
+                update,
+                f"❌ 无效插件：{', '.join(invalid_plugins or requested_plugins)}\n"
+                f"使用 /plugins 查看当前启用插件"
+            )
+        return
+
+    if args[0] == "channels" and len(args) > 1:
+        channels_str = _get_list_arg(args)
+        if channels_str.lower() in ("all", "clear", "全部"):
+            settings_manager.update_settings(user_id, channels=[])
+            await reply_with_auto_delete(update, "✅ 频道来源已设置为：全部默认频道")
+            return
+
+        requested_channels = _parse_csv_values(channels_str)
+        _, available_channels = await _get_pansou_lists()
+        valid_channels, invalid_channels = _validate_values(requested_channels, available_channels)
+        if valid_channels:
+            settings_manager.update_settings(user_id, channels=valid_channels)
+            msg = f"✅ 已设置频道来源：{', '.join(valid_channels)}"
+            if invalid_channels:
+                msg += f"\n⚠️ 无效频道：{', '.join(invalid_channels)}"
+            await reply_with_auto_delete(update, msg)
+        else:
+            await reply_with_auto_delete(
+                update,
+                f"❌ 无效频道：{', '.join(invalid_channels or requested_channels)}\n"
+                f"使用 /channels 查看当前启用频道"
             )
         return
     
@@ -554,6 +818,11 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 <code>/settings</code> - 查看当前设置
 <code>/settings reset</code> - 重置为默认
 <code>/settings types baidu,quark</code> - 设置网盘类型
+<code>/settings types all</code> - 恢复全部网盘
+<code>/settings plugins panta,wanou</code> - 指定插件
+<code>/settings plugins all</code> - 恢复全部插件
+<code>/settings channels tgsearchers4</code> - 指定频道
+<code>/settings channels all</code> - 恢复全部频道
 <code>/settings limit 15</code> - 设置结果数量
 <code>/settings source all</code> - 设置搜索来源"""
     await reply_with_auto_delete(update, help_text, parse_mode=ParseMode.HTML)
@@ -654,19 +923,26 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     message = await update.message.reply_text("🔄 正在检查服务状态...")
     auto_delete_message(message)
     
-    is_healthy = await pansou_client.health_check()
+    service_info = await pansou_client.get_service_info(force_refresh=True)
+    is_healthy = bool(service_info.get("healthy"))
     
     if is_healthy:
         user_settings = settings_manager.get_settings(user_id)
+        plugin_count = service_info.get("plugin_count", len(service_info.get("plugins", [])))
+        channels_count = service_info.get("channels_count", len(service_info.get("channels", [])))
         status_text = f"""✅ <b>服务状态正常</b>
 
 🤖 Bot: 运行中
 🔍 Pansou API: 正常
+🔌 启用插件: {plugin_count}
+📡 默认频道: {channels_count}
 
 <b>您的设置：</b>
 📊 结果限制: {user_settings.result_limit}
 🔍 搜索来源: {user_settings.source_type}
-📁 网盘类型: {len(user_settings.cloud_types)}个
+📁 网盘类型: {"全部" if not user_settings.cloud_types else str(len(user_settings.cloud_types)) + "个"}
+🔌 插件筛选: {"全部" if not user_settings.plugins else str(len(user_settings.plugins)) + "个"}
+📡 频道筛选: {"全部" if not user_settings.channels else str(len(user_settings.channels)) + "个"}
 ✅ 包含过滤: {len(user_settings.filter_include)}个
 ❌ 排除过滤: {len(user_settings.filter_exclude)}个
 
@@ -906,8 +1182,49 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
     
-    keyword = " ".join(args)
-    await perform_search(update, context, keyword)
+    keyword, options, error = _parse_search_options(" ".join(args))
+    if error:
+        await reply_with_auto_delete(update, f"❌ {html.escape(error)}", parse_mode=ParseMode.HTML)
+        return
+    if not keyword:
+        await reply_with_auto_delete(update, "❌ 请输入搜索关键词", parse_mode=ParseMode.HTML)
+        return
+
+    if options.get("cloud_types"):
+        valid_types, invalid_types = _validate_values(options["cloud_types"], list(SETTINGS_CLOUD_NAMES.keys()))
+        if invalid_types:
+            await reply_with_auto_delete(
+                update,
+                f"❌ 无效网盘类型：{html.escape(', '.join(invalid_types))}\n使用 /types 查看支持的类型",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        options["cloud_types"] = valid_types
+
+    if options.get("plugins") or options.get("channels"):
+        available_plugins, available_channels = await _get_pansou_lists()
+        if options.get("plugins"):
+            valid_plugins, invalid_plugins = _validate_values(options["plugins"], available_plugins)
+            if invalid_plugins:
+                await reply_with_auto_delete(
+                    update,
+                    f"❌ 无效插件：{html.escape(', '.join(invalid_plugins))}\n使用 /plugins 查看当前启用插件",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            options["plugins"] = valid_plugins
+        if options.get("channels"):
+            valid_channels, invalid_channels = _validate_values(options["channels"], available_channels)
+            if invalid_channels:
+                await reply_with_auto_delete(
+                    update,
+                    f"❌ 无效频道：{html.escape(', '.join(invalid_channels))}\n使用 /channels 查看当前启用频道",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            options["channels"] = valid_channels
+
+    await perform_search(update, context, keyword, **options)
 
 
 async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -950,6 +1267,7 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
 <b>🎯 使用方式：</b>
 • 直接发送关键词，如：<code>复仇者联盟</code>
 • 使用命令：<code>/search 钢铁侠</code>
+• 群里可用：<code>/s 钢铁侠</code>
 
 💡 <b>提示：</b>
 • 搜索后会显示网盘类型按钮，点击即可查看结果
@@ -980,6 +1298,9 @@ async def _run_search_flow(
     limit: Optional[int] = None,
     cloud_types: Optional[list] = None,
     source_type: Optional[str] = None,
+    plugins: Optional[list] = None,
+    channels: Optional[list] = None,
+    force_refresh: bool = False,
 ) -> None:
     """统一处理普通搜索与回调触发的重新搜索。"""
     user_settings = settings_manager.get_settings(user_id)
@@ -1007,12 +1328,13 @@ async def _run_search_flow(
     try:
         results = await pansou_client.search(
             keyword=keyword,
-            channels=user_settings.channels if user_settings.channels else None,
-            plugins=user_settings.plugins if user_settings.plugins else None,
+            channels=channels if channels is not None else (user_settings.channels if user_settings.channels else None),
+            plugins=plugins if plugins is not None else (user_settings.plugins if user_settings.plugins else None),
             cloud_types=cloud_types,
             source_type=source_type,
             filter_config=filter_config,
             limit=limit,
+            force_refresh=force_refresh,
         )
 
         if "error" in results:
@@ -1036,6 +1358,13 @@ async def _run_search_flow(
             "keyword": keyword,
             "results": results,
             "timestamp": time.time(),
+            "options": {
+                "limit": limit,
+                "cloud_types": cloud_types,
+                "source_type": source_type,
+                "plugins": plugins,
+                "channels": channels,
+            },
         })
 
         overview_text = pansou_client.format_overview(results, keyword)
@@ -1075,7 +1404,10 @@ async def perform_search(
     keyword: str,
     limit: Optional[int] = None,
     cloud_types: Optional[list] = None,
-    source_type: Optional[str] = None
+    source_type: Optional[str] = None,
+    plugins: Optional[list] = None,
+    channels: Optional[list] = None,
+    force_refresh: bool = False,
 ) -> None:
     """执行搜索并显示分类按钮"""
     user_id = update.effective_user.id
@@ -1102,6 +1434,9 @@ async def perform_search(
         limit=limit,
         cloud_types=cloud_types,
         source_type=source_type,
+        plugins=plugins,
+        channels=channels,
+        force_refresh=force_refresh,
     )
 
 
@@ -1113,7 +1448,10 @@ async def perform_search_from_callback(
     chat_id: int,
     limit: Optional[int] = None,
     cloud_types: Optional[list] = None,
-    source_type: Optional[str] = None
+    source_type: Optional[str] = None,
+    plugins: Optional[list] = None,
+    channels: Optional[list] = None,
+    force_refresh: bool = True,
 ) -> None:
     """从回调查询执行搜索（用于重新搜索功能）"""
     async def _edit_message(text: str, **kwargs):
@@ -1128,6 +1466,9 @@ async def perform_search_from_callback(
         limit=limit,
         cloud_types=cloud_types,
         source_type=source_type,
+        plugins=plugins,
+        channels=channels,
+        force_refresh=force_refresh,
     )
 
 
@@ -1300,7 +1641,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # 执行新搜索 - 使用 query 直接编辑消息
         try:
             # 直接使用已存在的 search_message 进行搜索
-            await perform_search_from_callback(query, context, keyword, user_id, chat_id)
+            await perform_search_from_callback(
+                query,
+                context,
+                keyword,
+                user_id,
+                chat_id,
+                **cached.get("options", {}),
+            )
         except Exception as e:
             logger.error("refresh_search_error", error=str(e))
             safe_error = html.escape(str(e))
@@ -1330,7 +1678,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         results = cached_data["results"]
         keyword = cached_data["keyword"]
         
-        formatted_text = pansou_client.format_results(results, keyword)
+        user_settings = settings_manager.get_settings(user_id)
+        per_type_limit = max(1, min(user_settings.result_limit, settings.max_result_limit))
+        formatted_text = pansou_client.format_results(results, keyword, per_type_limit=per_type_limit)
         formatted_text = add_auto_delete_notice(formatted_text, ParseMode.HTML)
         
         if len(formatted_text) > 4000:
@@ -1415,7 +1765,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.answer()
         
         links = results["merged_by_type"][cloud_type]
-        per_page = 5
+        user_settings = settings_manager.get_settings(user_id)
+        per_page = max(1, min(user_settings.result_limit, settings.max_result_limit))
         total_pages = (len(links) + per_page - 1) // per_page
         
         # 确保页码有效
@@ -1471,6 +1822,14 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # ============ 应用构建 ============
 
+async def _post_init(application: Application) -> None:
+    """启动后同步 Telegram 命令菜单。"""
+    try:
+        await application.bot.set_my_commands(BOT_COMMANDS)
+    except Exception as exc:
+        logger.warning("set_bot_commands_failed", error=str(exc))
+
+
 def create_application() -> Application:
     """创建并配置 Bot 应用"""
     from bot_config import create_optimized_request
@@ -1479,6 +1838,7 @@ def create_application() -> Application:
         Application.builder()
         .token(settings.tg_bot_token)
         .request(create_optimized_request())
+        .post_init(_post_init)
         .concurrent_updates(True)
         .build()
     )
@@ -1487,8 +1847,12 @@ def create_application() -> Application:
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("types", types_command))
+    application.add_handler(CommandHandler("sources", sources_command))
+    application.add_handler(CommandHandler("plugins", plugins_command))
+    application.add_handler(CommandHandler("channels", channels_command))
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CommandHandler("filter", filter_command))
+    application.add_handler(CommandHandler("reset", reset_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("refresh", refresh_command))
     application.add_handler(CommandHandler("update", update_command))

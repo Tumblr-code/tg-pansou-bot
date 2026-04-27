@@ -1,6 +1,6 @@
 # TG Pansou Bot 🤖
 
-[![Version](https://img.shields.io/badge/Version-2.3.0-blue.svg)](https://github.com/Tumblr-code/tg-pansou-bot/releases)
+[![Version](https://img.shields.io/badge/Version-2.4.0-blue.svg)](https://github.com/Tumblr-code/tg-pansou-bot/releases)
 [![Python](https://img.shields.io/badge/Python-3.11+-green.svg)](https://www.python.org/)
 [![PM2](https://img.shields.io/badge/PM2-managed-blue.svg)](https://pm2.keymetrics.io/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -11,8 +11,9 @@
 
 - 🔍 **智能搜索** - 支持关键词搜索网盘资源
 - 💬 **私聊/群组** - 私聊直接发关键词，群组用命令搜索
-- 📁 **多网盘支持** - 百度、阿里、夸克、天翼、UC、115、PikPak、磁力等
+- 📁 **多网盘支持** - 百度、阿里、夸克、光鸭、天翼、UC、115、PikPak、微云、蓝奏、坚果云、磁力等
 - 🔄 **分类查看** - 搜索结果按网盘类型分类显示
+- 🧭 **来源控制** - 支持按 Pansou 插件、Telegram 频道和网盘类型精确筛选
 - ⚡ **快速响应** - 异步处理，优化超时配置
 - 🚦 **稳定保护** - 热门查询缓存、并发合并、频率限制
 - ♻️ **运维命令** - 支持运行时刷新与在线更新
@@ -27,6 +28,7 @@
 | 百度网盘 | baidu |
 | 阿里云盘 | aliyun |
 | 夸克网盘 | quark |
+| 光鸭云盘 | guangya |
 | 天翼云盘 | tianyi |
 | UC网盘 | uc |
 | 移动云盘 | mobile |
@@ -34,8 +36,12 @@
 | PikPak | pikpak |
 | 迅雷网盘 | xunlei |
 | 123网盘 | 123 |
+| 腾讯微云 | weiyun |
+| 蓝奏云 | lanzou |
+| 坚果云 | jianguoyun |
 | 磁力链接 | magnet |
 | 电驴链接 | ed2k |
+| 其他 | others |
 
 ## 🚀 快速开始
 
@@ -100,7 +106,11 @@ WECOM_SEARCH_LIMIT=5
 - `/settings`
 - `/filter`
 - `/types`
+- `/sources`
+- `/plugins`
+- `/channels`
 - `/refresh`
+- `/reset`
 - `/update`
 
 ### 3. 安装依赖
@@ -152,7 +162,26 @@ python api_main.py
 ### 群组使用
 
 1. 将 Bot 添加到群组
-2. 使用 `/search 关键词` 搜索
+2. 使用 `/search 关键词` 或 `/s 关键词` 搜索
+
+### 高级搜索
+
+`/search` 支持在一次查询里临时指定来源、网盘类型、插件、频道、结果数量和刷新缓存：
+
+```text
+/search 三体 --src all --types quark,aliyun --plugins panta,wanou --channels tgsearchers4 --limit 10 --refresh
+```
+
+参数说明：
+
+| 参数 | 说明 |
+|------|------|
+| `--src all|tg|plugin` | 指定搜索全部来源、Telegram 频道或插件来源 |
+| `--types quark,aliyun` | 指定网盘类型，传 `all` 恢复全部 |
+| `--plugins panta,wanou` | 指定插件来源，传 `all` 恢复全部 |
+| `--channels tgsearchers4` | 指定频道来源，传 `all` 恢复全部 |
+| `--limit 10` | 指定每类结果展示数量 |
+| `--refresh` | 跳过本地短缓存，强制刷新上游结果 |
 
 ### 可用命令
 
@@ -161,17 +190,41 @@ python api_main.py
 | `/start` | 开始使用 | 所有人 |
 | `/help` | 帮助信息 | 所有人 |
 | `/search <关键词>` | 搜索资源 | 所有人 |
+| `/s <关键词>` | 群组内搜索资源 | 所有人 |
 | `/status` | 服务状态 | 管理员 |
+| `/sources` | 查看 Pansou 来源概况 | 管理员 |
+| `/plugins` | 查看当前启用插件 | 管理员 |
+| `/channels` | 查看当前启用频道 | 管理员 |
 | `/refresh` | 刷新运行时缓存与服务状态 | 管理员 |
 | `/update` | 拉取最新代码并重启 | 管理员 |
 | `/settings` | 管理设置 | 管理员 |
 | `/filter` | 搜索过滤 | 管理员 |
+| `/reset` | 重置搜索设置 | 管理员 |
 
 ### 管理维护命令
 
 - `/status`：检查 Bot 和 Pansou API 是否正常
+- `/sources`：查看 Pansou API 当前插件和频道数量
+- `/plugins`：查看当前启用插件，并给出 `/settings plugins ...` 示例
+- `/channels`：查看当前启用频道，并给出 `/settings channels ...` 示例
 - `/refresh`：清理运行时缓存、限流记录和设置缓存，并重新探测 Pansou API
 - `/update`：从 GitHub 拉取当前分支最新代码；如果 `requirements.txt` 有变化，会自动安装依赖并重启机器人
+
+### 设置命令示例
+
+```text
+/settings source all
+/settings source plugin
+/settings types quark,aliyun
+/settings types all
+/settings plugins panta,wanou
+/settings plugins all
+/settings channels tgsearchers4
+/settings channels all
+/settings limit 15
+```
+
+默认情况下，Bot 不再主动传固定 `cloud_types` 白名单给上游，避免 Pansou 新增网盘类型后被 Bot 侧过滤。
 
 ### `/update` 使用说明
 
@@ -237,6 +290,24 @@ curl -X POST "http://127.0.0.1:8090/api/pansou/search" \
 - `total`：总结果数
 
 这样可以直接给站点页面、企业微信客服消息模板或其他机器人二次封装。
+
+## 🔌 Pansou API 适配说明
+
+Bot 会兼容 Pansou API 的多种返回结构：
+
+- `merged_by_type`
+- `results`
+- `items`
+- `results[].links`
+
+同时会归一化常见别名，例如：
+
+- `ali`、`alipan` -> `aliyun`
+- `123pan` -> `123`
+- `lanzouyun` -> `lanzou`
+- `weiyunpan` -> `weiyun`
+
+如果上游 `/api/health` 返回插件和频道信息，Bot 会在 `/sources`、`/plugins`、`/channels` 和 `/status` 中展示。
 
 ## 💼 企业微信客服接入
 

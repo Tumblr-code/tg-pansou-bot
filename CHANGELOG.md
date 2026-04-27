@@ -7,6 +7,32 @@
 
 ## [Unreleased]
 
+### 🔎 Pansou API 适配与来源管理
+
+### Added
+
+- 新增 `/s` 短命令，便于群组中快速搜索
+- 新增 `/sources`、`/plugins`、`/channels`、`/reset` 管理命令
+- 新增 `/search` 临时参数：`--src`、`--types`、`--plugins`、`--channels`、`--limit`、`--refresh`
+- 新增插件和频道筛选设置：`/settings plugins ...`、`/settings channels ...`
+- 新增 Telegram 命令菜单同步，启动后自动设置常用 Bot 命令
+- 新增对光鸭、腾讯微云、蓝奏云、坚果云等网盘类型的展示和别名归一化
+
+### Changed
+
+- 默认不再向上游传固定 `cloud_types` 白名单，避免 Pansou 新增网盘类型后被 Bot 侧过滤
+- 搜索结果兼容 `merged_by_type`、`results`、`items`、`results[].links` 等多种 Pansou API 返回结构
+- 搜索结果链接改为 HTML 可点击链接，减少长链接导致的 Telegram 消息过长问题
+- `/status` 现在展示 Pansou API 插件和频道数量
+- `/refresh` 会同步清理服务信息缓存
+- README 和 DEPLOY 补充来源筛选、插件/频道管理、群组短命令和 Pansou API 适配说明
+
+### Fixed
+
+- 修复部分上游网盘类型别名导致结果被归到 `others` 或筛选遗漏的问题
+- 修复回调刷新时丢失原搜索参数的问题
+- 修复全量结果页和分页详情没有按用户结果数量设置展示的问题
+
 ### 🔐 安全基线与工程化
 
 ### Added

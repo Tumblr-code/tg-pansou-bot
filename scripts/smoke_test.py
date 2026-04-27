@@ -32,4 +32,42 @@ for module_name in MODULES:
     importlib.import_module(module_name)
     print(f"import ok: {module_name}")
 
+from pansou_client import pansou_client
+
+sample = {
+    "code": 0,
+    "data": {
+        "total": 3,
+        "merged_by_type": {
+            "ali": [{"link": "https://www.alipan.com/s/demo", "title": "ali item"}],
+            "123pan": [{"url": "https://www.123pan.com/s/demo", "name": "123 item"}],
+        },
+    },
+}
+
+normalized = pansou_client._normalize_search_result(sample)
+assert "aliyun" in normalized["merged_by_type"]
+assert "123" in normalized["merged_by_type"]
+assert normalized["merged_by_type"]["aliyun"][0]["url"] == "https://www.alipan.com/s/demo"
+
+nested = {
+    "results": [
+        {
+            "title": "nested title",
+            "channel": "demo",
+            "links": [
+                {"type": "lanzouyun", "url": "https://example.com/file"},
+            ],
+        }
+    ]
+}
+normalized_nested = pansou_client._normalize_search_result(nested)
+assert normalized_nested["merged_by_type"]["lanzou"][0]["note"] == "nested title"
+assert 'href="https://example.com/file"' in pansou_client.format_type_results(
+    normalized_nested,
+    "demo",
+    "lanzou",
+)
+assert "蓝奏云: 1" in pansou_client.format_overview(normalized_nested, "demo")
+
 print("Smoke test passed")

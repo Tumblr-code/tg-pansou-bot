@@ -58,6 +58,7 @@ PANSOU_API_URL=http://localhost:8888
 DEFAULT_RESULT_LIMIT=10
 MAX_RESULT_LIMIT=20
 SEARCH_TIMEOUT=30
+ADMIN_IDS=你的Telegram数字ID
 ```
 
 ### 步骤 5：部署 pansou 服务
@@ -140,15 +141,78 @@ docker run -d \
   ghcr.io/fish2018/pansou:latest
 ```
 
+如果你使用的是已经本地运行的纯后端 Pansou API，只需要把 `PANSOU_API_URL` 指向对应地址即可，例如：
+
+```env
+PANSOU_API_URL=http://127.0.0.1:8888
+```
+
+Bot 会优先探测：
+
+- `GET /api/health`：健康状态、插件和频道信息
+- `GET /healthz`：兼容健康检查
+- `POST /api/search`：资源搜索
+
 ### 步骤 7：运行 Bot
 
 ```bash
 python main.py
 ```
 
+首次启动后建议在 Telegram 里执行：
+
+```text
+/status
+/sources
+/plugins
+/channels
+```
+
+确认 Pansou API、插件和频道都能被 Bot 正确读取。
+
 ---
 
 ## 🔧 高级配置
+
+### Pansou API 来源筛选
+
+当前版本支持按来源细化搜索：
+
+```text
+/search 三体 --src all --types quark,aliyun --plugins panta,wanou --channels tgsearchers4 --limit 10 --refresh
+```
+
+也可以设置管理员默认偏好：
+
+```text
+/settings source all
+/settings source plugin
+/settings source tg
+/settings types all
+/settings types quark,aliyun
+/settings plugins all
+/settings plugins panta,wanou
+/settings channels all
+/settings channels tgsearchers4
+```
+
+说明：
+
+- `--src all` 搜索全部来源
+- `--src plugin` 只搜插件来源
+- `--src tg` 只搜 Telegram 频道来源
+- `--refresh` 会跳过 Bot 本地短缓存，重新请求上游
+- 默认不传 `cloud_types`，避免新增网盘类型被 Bot 侧过滤
+
+### 群聊使用
+
+如果 Bot 在群组中使用，推荐用短命令：
+
+```text
+/s 关键词
+```
+
+普通 `/search 关键词` 仍然可用。
 
 ### 使用 Docker Compose 同时部署
 

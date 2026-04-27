@@ -10,17 +10,21 @@ from structlog import get_logger
 
 logger = get_logger()
 
-# 默认网盘类型
-DEFAULT_CLOUD_TYPES = [
+# 旧版默认网盘类型，历史用户如果保留这一组值，说明并未主动自定义筛选。
+LEGACY_DEFAULT_CLOUD_TYPES = [
     "baidu", "aliyun", "quark", "tianyi", "uc", "mobile",
     "115", "pikpak", "xunlei", "123", "magnet", "ed2k"
 ]
+
+# 新版默认行为：不传 cloud_types，直接交给上游返回全部类型，避免后续新增网盘类型被 bot 侧白名单挡掉。
+DEFAULT_CLOUD_TYPES: list[str] = []
 
 # 网盘类型中文名
 CLOUD_TYPE_NAMES = {
     "baidu": "百度网盘",
     "aliyun": "阿里云盘",
     "quark": "夸克网盘",
+    "guangya": "光鸭云盘",
     "tianyi": "天翼云盘",
     "uc": "UC网盘",
     "mobile": "移动云盘",
@@ -28,6 +32,9 @@ CLOUD_TYPE_NAMES = {
     "pikpak": "PikPak",
     "xunlei": "迅雷网盘",
     "123": "123网盘",
+    "weiyun": "腾讯微云",
+    "lanzou": "蓝奏云",
+    "jianguoyun": "坚果云",
     "magnet": "磁力链接",
     "ed2k": "电驴链接",
     "others": "其他"
@@ -118,8 +125,12 @@ class UserSettings:
         
         if self.channels:
             lines.append(f"📡 指定频道: {len(self.channels)}个")
+        else:
+            lines.append("📡 指定频道: 全部")
         if self.plugins:
             lines.append(f"🔌 指定插件: {len(self.plugins)}个")
+        else:
+            lines.append("🔌 指定插件: 全部")
         
         return "\n".join(lines)
 
@@ -154,6 +165,9 @@ class SettingsManager:
                 with open(settings_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     settings = UserSettings.from_dict(data)
+                    if settings.cloud_types == LEGACY_DEFAULT_CLOUD_TYPES:
+                        settings.cloud_types = DEFAULT_CLOUD_TYPES.copy()
+                        self.save_settings(settings)
                     self.settings_cache[user_id] = settings
                     return settings
             except Exception as e:
