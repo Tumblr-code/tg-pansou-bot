@@ -24,7 +24,6 @@ MODULES = [
     "pansou_client",
     "user_settings",
     "http_api",
-    "wecom_service",
     "bot",
 ]
 
