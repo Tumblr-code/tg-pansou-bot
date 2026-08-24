@@ -45,6 +45,7 @@ if [[ -n $old_target && $old_target != "$candidate" ]]; then
 fi
 atomic_link "$candidate" "$app_root/current"
 
+systemctl reset-failed tg-pansou-bot.service
 if systemctl start tg-pansou-bot.service; then
   sleep 3
 fi
@@ -59,6 +60,7 @@ echo "candidate failed; restoring previous release" >&2
 systemctl stop tg-pansou-bot.service || true
 if [[ -n $old_target ]]; then
   atomic_link "$old_target" "$app_root/current"
+  systemctl reset-failed tg-pansou-bot.service
   systemctl start tg-pansou-bot.service
 fi
 exit 1
