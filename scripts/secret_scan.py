@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -22,6 +23,19 @@ TG_TOKEN_RE = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b")
 ALLOWED_FILES = {".env.example"}
 
 
+def is_git_ignored(rel: str) -> bool:
+    if not (ROOT / ".git").exists():
+        return False
+    result = subprocess.run(
+        ["git", "check-ignore", "-q", "--", rel],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def scan() -> list[str]:
     problems: list[str] = []
 
@@ -33,6 +47,8 @@ def scan() -> list[str]:
         name = path.name
 
         if ".git/" in rel or rel.startswith(".git/"):
+            continue
+        if is_git_ignored(rel):
             continue
 
         if name not in ALLOWED_FILES:

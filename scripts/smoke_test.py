@@ -21,6 +21,13 @@ os.environ.setdefault("REQUIRE_HTTP_API_TOKEN", "true")
 
 MODULES = [
     "config",
+    "runtime_state",
+    "message_utils",
+    "maintenance",
+    "search_options",
+    "keyboards",
+    "application_factory",
+    "search_flow",
     "pansou_client",
     "user_settings",
     "http_api",
@@ -68,5 +75,24 @@ assert 'href="https://example.com/file"' in pansou_client.format_type_results(
     "lanzou",
 )
 assert "蓝奏云: 1" in pansou_client.format_overview(normalized_nested, "demo")
+
+from message_utils import ensure_telegram_text
+from search_flow import _format_search_scope
+
+long_html = "<b>" + ("x" * 5000) + "</b>"
+safe_html = ensure_telegram_text(long_html, parse_mode="HTML")
+assert len(safe_html) < 4096
+assert "<b>" not in safe_html
+scope = _format_search_scope(
+    source_type="plugin",
+    cloud_types=["quark", "aliyun"],
+    plugins=["panta", "wanou", "quark4k", "susu"],
+    channels=None,
+    limit=5,
+    force_refresh=True,
+)
+assert "仅插件" in scope
+assert "等4个" in scope
+assert "已刷新" in scope
 
 print("Smoke test passed")

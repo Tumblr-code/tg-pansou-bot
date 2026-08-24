@@ -4,143 +4,59 @@ Telegram Bot 主模块 - 支持分类按钮
 """
 import asyncio
 import html
-import os
-import shlex
 import sys
-import time
-from pathlib import Path
-from typing import Any, Optional
-from collections import OrderedDict, deque
 
-from telegram import BotCommand, Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from telegram import BotCommand, Update
 from telegram.constants import ParseMode
-from telegram.error import BadRequest
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
-)
+from telegram.ext import ContextTypes
 from structlog import get_logger
 
+from application_factory import BotHandlerSet
+from application_factory import create_application as build_application
 from config import settings
 from pansou_client import pansou_client, CLOUD_TYPE_NAMES, CLOUD_TYPE_ICONS
 from user_settings import settings_manager, CLOUD_TYPE_NAMES as SETTINGS_CLOUD_NAMES
+from keyboards import (
+    create_all_results_keyboard,
+    create_pagination_keyboard,
+    create_type_keyboard,
+    is_cache_owner as _is_cache_owner,
+    parse_cache_key_from_action as _parse_cache_key_from_action,
+    parse_type_callback as _parse_type_callback,
+)
+from maintenance import (
+    PIP_INSTALL_TIMEOUT,
+    REPO_ROOT,
+    restart_process as _restart_process,
+    run_command as _run_command,
+    run_git_command as _run_git_command,
+    truncate_output as _truncate_output,
+)
+from message_utils import (
+    add_auto_delete_notice,
+    ensure_telegram_text,
+    reply_with_auto_delete,
+    safe_edit_message as _safe_edit_message,
+)
+from runtime_state import (
+    auto_delete_message,
+    check_search_rate_limit,
+    schedule_message_deletion,
+    search_cache,
+    search_rate_limiter,
+    set_bot_application,
+)
+from search_options import (
+    format_compact_list as _format_compact_list,
+    get_list_arg as _get_list_arg,
+    get_pansou_lists as _get_pansou_lists,
+    parse_csv_values as _parse_csv_values,
+    parse_search_options as _parse_search_options,
+    validate_values as _validate_values,
+)
+from search_flow import perform_search, perform_search_from_callback
 
 logger = get_logger()
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-ENTRYPOINT = REPO_ROOT / "main.py"
-UPDATE_COMMAND_TIMEOUT = 300
-PIP_INSTALL_TIMEOUT = 600
-MAX_COMMAND_OUTPUT = 1200
-MAX_LIST_MESSAGE_LENGTH = 3300
-
-
-class LRUCache:
-    """带 TTL 的 LRU 缓存"""
-    
-    def __init__(self, max_size: int = 100, ttl: int = 300):
-        self.max_size = max_size
-        self.ttl = ttl
-        self._cache: OrderedDict = OrderedDict()
-        self._timestamps: dict = {}
-    
-    def get(self, key: str):
-        """获取缓存值"""
-        if key not in self._cache:
-            return None
-        if time.monotonic() - self._timestamps.get(key, 0) > self.ttl:
-            self._remove(key)
-            return None
-        self._cache.move_to_end(key)
-        return self._cache[key]
-    
-    def set(self, key: str, value):
-        """设置缓存值"""
-        if key in self._cache:
-            self._remove(key)
-        elif len(self._cache) >= self.max_size:
-            oldest_key, _ = self._cache.popitem(last=False)
-            self._timestamps.pop(oldest_key, None)
-        self._cache[key] = value
-        self._timestamps[key] = time.monotonic()
-    
-    def _remove(self, key: str):
-        """移除缓存项"""
-        self._cache.pop(key, None)
-        self._timestamps.pop(key, None)
-    
-    def clear_expired(self):
-        """清理过期缓存"""
-        now = time.monotonic()
-        expired = [k for k, t in self._timestamps.items() if now - t > self.ttl]
-        for k in expired:
-            self._remove(k)
-
-    def clear(self) -> int:
-        """清空缓存并返回条目数。"""
-        count = len(self._cache)
-        self._cache.clear()
-        self._timestamps.clear()
-        return count
-
-
-class SearchRateLimiter:
-    """按用户做滑动窗口限流，保护上游搜索服务。"""
-
-    def __init__(self, limit: int, window_seconds: int = 60, max_users: int = 2048):
-        self.limit = limit
-        self.window_seconds = window_seconds
-        self.max_users = max_users
-        self._records: OrderedDict[int, deque[float]] = OrderedDict()
-
-    def check(self, user_id: int) -> tuple[bool, int]:
-        """检查用户是否超过搜索频率限制。"""
-        now = time.monotonic()
-        records = self._records.get(user_id)
-        if records is None:
-            records = deque()
-            self._records[user_id] = records
-        else:
-            self._records.move_to_end(user_id)
-
-        cutoff = now - self.window_seconds
-        while records and records[0] <= cutoff:
-            records.popleft()
-
-        if len(records) >= self.limit:
-            retry_after = max(1, int(self.window_seconds - (now - records[0])) + 1)
-            return False, retry_after
-
-        records.append(now)
-
-        while len(self._records) > self.max_users:
-            self._records.popitem(last=False)
-
-        return True, 0
-
-    def clear(self) -> int:
-        """清空限流记录。"""
-        count = len(self._records)
-        self._records.clear()
-        return count
-
-
-search_cache = LRUCache(max_size=50, ttl=300)
-search_rate_limiter = SearchRateLimiter(limit=settings.rate_limit_per_minute)
-
-# Bot 应用实例（在 main() 中设置）
-bot_application = None
-
-# 自动删除时间（秒）
-AUTO_DELETE_DELAY = 180  # 3分钟
-
-# 后台任务队列 - 使用字典优化查找速度
-_deletion_tasks = {}
-_cleanup_task = None
 
 BOT_COMMANDS = [
     BotCommand("search", "搜索资源"),
@@ -157,203 +73,6 @@ BOT_COMMANDS = [
     BotCommand("refresh", "刷新运行时缓存"),
 ]
 
-async def _cleanup_worker():
-    """后台清理工作器，批量处理消息删除"""
-    global _cleanup_task
-    try:
-        while _deletion_tasks:
-            await asyncio.sleep(5)  # 每5秒检查一次（减少CPU使用）
-            now = asyncio.get_event_loop().time()
-            
-            # 找出需要删除的任务
-            to_delete = [
-                (chat_id, msg_id) for (chat_id, msg_id), delete_time in _deletion_tasks.items()
-                if now >= delete_time
-            ]
-            
-            # 删除消息
-            for chat_id, message_id in to_delete:
-                try:
-                    if bot_application:
-                        await bot_application.bot.delete_message(chat_id=chat_id, message_id=message_id)
-                except Exception:
-                    pass
-                finally:
-                    _deletion_tasks.pop((chat_id, message_id), None)
-    finally:
-        _cleanup_task = None
-
-
-def _ensure_cleanup_worker():
-    """确保清理工作器在运行"""
-    global _cleanup_task
-    if _cleanup_task is None or _cleanup_task.done():
-        _cleanup_task = asyncio.create_task(_cleanup_worker())
-
-
-def auto_delete_message(message: Message, delay: int = AUTO_DELETE_DELAY):
-    """自动删除消息（超轻量，O(1)操作）"""
-    key = (message.chat_id, message.message_id)
-    _deletion_tasks[key] = asyncio.get_event_loop().time() + delay
-    _ensure_cleanup_worker()
-
-
-def schedule_message_deletion(chat_id: int, message_id: int, delay: int = AUTO_DELETE_DELAY):
-    """安排消息在指定时间后删除（超轻量，O(1)操作）"""
-    key = (chat_id, message_id)
-    _deletion_tasks[key] = asyncio.get_event_loop().time() + delay
-    _ensure_cleanup_worker()
-
-
-async def _safe_edit_message(edit_message, text: str, **kwargs):
-    # Ignore Telegram no-op edits when the content is unchanged.
-    try:
-        return await edit_message(text, **kwargs)
-    except BadRequest as exc:
-        if "Message is not modified" in str(exc):
-            logger.debug("ignored_message_not_modified")
-            return None
-        raise
-
-
-def add_auto_delete_notice(text: str, parse_mode: Optional[str] = None) -> str:
-    """在消息中添加自动删除提示（快速版本）"""
-    # 使用简单的字符串拼接，避免重复检查
-    if parse_mode == ParseMode.HTML:
-        return f"{text}\n\n<i>⏰ 此消息将在 3 分钟后自动删除</i>"
-    elif parse_mode == ParseMode.MARKDOWN:
-        return f"{text}\n\n_⏰ 此消息将在 3 分钟后自动删除_"
-    else:
-        return f"{text}\n\n⏰ 此消息将在 3 分钟后自动删除"
-
-
-def check_search_rate_limit(user_id: int) -> tuple[bool, int]:
-    """检查用户搜索频率。"""
-    return search_rate_limiter.check(user_id)
-
-
-def _build_search_cache_key(chat_id: int, user_id: int, message_id: int) -> str:
-    """为每条搜索结果消息生成独立缓存键，避免多次搜索互相覆盖。"""
-    return f"{chat_id}:{user_id}:{message_id}"
-
-
-def _truncate_output(text: str, limit: int = MAX_COMMAND_OUTPUT) -> str:
-    """截断命令输出，避免消息过长。"""
-    cleaned = text.strip()
-    if len(cleaned) <= limit:
-        return cleaned
-    return f"{cleaned[:limit].rstrip()}\n...（输出已截断）"
-
-
-async def _run_command(
-    *args: str,
-    timeout: int = UPDATE_COMMAND_TIMEOUT,
-    cwd: Path = REPO_ROOT,
-) -> tuple[int, str, str]:
-    """运行子命令并返回退出码、stdout、stderr。"""
-    process = await asyncio.create_subprocess_exec(
-        *args,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-
-    try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        process.kill()
-        await process.communicate()
-        return 124, "", f"命令执行超时（>{timeout}秒）"
-
-    return (
-        process.returncode,
-        stdout.decode("utf-8", errors="replace").strip(),
-        stderr.decode("utf-8", errors="replace").strip(),
-    )
-
-
-def _looks_like_git_tls_error(detail: str) -> bool:
-    """判断 Git HTTPS 请求是否命中了常见 TLS/HTTP2 传输错误。"""
-    lowered = detail.lower()
-    indicators = (
-        "gnutls_handshake()",
-        "tls connection was non-properly terminated",
-        "http/2 stream",
-        "http2 stream",
-        "curl 56",
-        "remote end hung up unexpectedly",
-        "recv failure",
-        "connection reset by peer",
-    )
-    return any(indicator in lowered for indicator in indicators)
-
-
-async def _run_git_command(
-    *args: str,
-    timeout: int = UPDATE_COMMAND_TIMEOUT,
-    cwd: Path = REPO_ROOT,
-) -> tuple[int, str, str]:
-    """运行 Git 命令，遇到 TLS 抖动时自动降级到 HTTP/1.1 重试。"""
-    commands = [
-        ("default", ("git", *args)),
-        (
-            "http1_fallback",
-            (
-                "git",
-                "-c",
-                "http.version=HTTP/1.1",
-                "-c",
-                "http.maxRequests=1",
-                *args,
-            ),
-        ),
-    ]
-
-    last_result = (1, "", "")
-    for mode, command in commands:
-        code, stdout, stderr = await _run_command(*command, timeout=timeout, cwd=cwd)
-        if code == 0:
-            return code, stdout, stderr
-
-        last_result = (code, stdout, stderr)
-        detail = "\n".join(part for part in (stderr, stdout) if part)
-        if mode == "default" and _looks_like_git_tls_error(detail):
-            logger.warning("git_command_retry_with_http1", args=list(args), error=detail)
-            await asyncio.sleep(1)
-            continue
-        break
-
-    return last_result
-
-
-async def _restart_process(delay_seconds: float = 1.0) -> None:
-    """延迟重启当前进程，让 Telegram 消息先发出去。"""
-    await asyncio.sleep(delay_seconds)
-    os.chdir(str(REPO_ROOT))
-    os.execv(sys.executable, [sys.executable, str(ENTRYPOINT)])
-
-
-async def reply_with_auto_delete(
-    update: Update,
-    text: str,
-    parse_mode: Optional[str] = None,
-    reply_markup: Optional[InlineKeyboardMarkup] = None,
-    **kwargs
-) -> Message:
-    """发送自动删除的回复消息"""
-    # 添加自动删除提示
-    text_with_notice = add_auto_delete_notice(text, parse_mode)
-    
-    message = await update.message.reply_text(
-        text_with_notice,
-        parse_mode=parse_mode,
-        reply_markup=reply_markup,
-        **kwargs
-    )
-    auto_delete_message(message)
-    return message
-
-
 # ============ 权限检查 ============
 
 def is_admin(user_id: int) -> bool:
@@ -367,118 +86,6 @@ def check_admin_permission(update: Update) -> bool:
     if not is_admin(user_id):
         return False
     return True
-
-
-def _parse_csv_values(raw: str) -> list[str]:
-    """解析逗号分隔列表，兼容多余空格。"""
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
-def _format_compact_list(values: list[str], *, limit: int = MAX_LIST_MESSAGE_LENGTH) -> str:
-    """把较长列表压缩为 Telegram 能稳定发送的文本。"""
-    if not values:
-        return "无"
-
-    lines: list[str] = []
-    current_length = 0
-    for value in values:
-        item = f"<code>{html.escape(str(value))}</code>"
-        extra = len(item) + (2 if lines else 0)
-        if current_length + extra > limit:
-            remaining = len(values) - len(lines)
-            lines.append(f"... 还有 {remaining} 个")
-            break
-        lines.append(item)
-        current_length += extra
-    return ", ".join(lines)
-
-
-def _get_list_arg(args: list[str], start_index: int = 1) -> str:
-    """把命令参数中列表部分重新拼回字符串。"""
-    return " ".join(args[start_index:]).strip()
-
-
-async def _get_pansou_lists(force_refresh: bool = False) -> tuple[list[str], list[str]]:
-    """从 Pansou API 获取当前启用插件和频道。"""
-    info = await pansou_client.get_service_info(force_refresh=force_refresh)
-    plugins = sorted(str(item) for item in info.get("plugins", []) if str(item).strip())
-    channels = sorted(str(item) for item in info.get("channels", []) if str(item).strip())
-    return plugins, channels
-
-
-def _validate_values(values: list[str], available: list[str]) -> tuple[list[str], list[str]]:
-    """校验用户输入列表；如果没有可用列表，则只做去空和去重。"""
-    if not available:
-        return list(dict.fromkeys(values)), []
-
-    available_set = set(available)
-    valid = [value for value in values if value in available_set]
-    invalid = [value for value in values if value not in available_set]
-    return list(dict.fromkeys(valid)), list(dict.fromkeys(invalid))
-
-
-def _parse_search_options(raw_text: str) -> tuple[str, dict[str, Any], Optional[str]]:
-    """解析 /search 参数，支持 --src/--types/--plugins/--channels/--limit/--refresh。"""
-    try:
-        tokens = shlex.split(raw_text)
-    except ValueError as exc:
-        return "", {}, f"参数格式错误：{exc}"
-
-    keyword_parts: list[str] = []
-    options: dict[str, Any] = {}
-    index = 0
-
-    def next_value(option: str) -> Optional[str]:
-        nonlocal index
-        if index + 1 >= len(tokens):
-            return None
-        index += 1
-        return tokens[index]
-
-    while index < len(tokens):
-        token = tokens[index]
-        key = token
-        value: Optional[str] = None
-
-        if token.startswith("--") and "=" in token:
-            key, value = token.split("=", 1)
-
-        if key in ("--refresh", "-r"):
-            options["force_refresh"] = True
-        elif key in ("--src", "--source"):
-            value = value if value is not None else next_value(key)
-            if value not in ("all", "tg", "plugin"):
-                return "", {}, "搜索来源只能是 all、tg 或 plugin"
-            options["source_type"] = value
-        elif key in ("--types", "--cloud-types"):
-            value = value if value is not None else next_value(key)
-            if not value:
-                return "", {}, "缺少网盘类型参数"
-            options["cloud_types"] = [] if value.lower() in ("all", "全部") else _parse_csv_values(value)
-        elif key == "--plugins":
-            value = value if value is not None else next_value(key)
-            if not value:
-                return "", {}, "缺少插件参数"
-            options["plugins"] = [] if value.lower() in ("all", "全部") else _parse_csv_values(value)
-        elif key == "--channels":
-            value = value if value is not None else next_value(key)
-            if not value:
-                return "", {}, "缺少频道参数"
-            options["channels"] = [] if value.lower() in ("all", "全部") else _parse_csv_values(value)
-        elif key == "--limit":
-            value = value if value is not None else next_value(key)
-            try:
-                options["limit"] = int(value or "")
-            except ValueError:
-                return "", {}, "limit 必须是数字"
-        elif token.startswith("-"):
-            return "", {}, f"未知参数：{token}"
-        else:
-            keyword_parts.append(token)
-        index += 1
-
-    keyword = " ".join(keyword_parts).strip()
-    return keyword, options, None
 
 
 # ============ 命令处理函数 ============
@@ -957,7 +564,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     # 添加自动删除提示
     status_text = add_auto_delete_notice(status_text, ParseMode.HTML)
-    await message.edit_text(status_text, parse_mode=ParseMode.HTML)
+    await _safe_edit_message(message.edit_text, status_text, parse_mode=ParseMode.HTML)
 
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -984,7 +591,7 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 🔍 Pansou API: {"正常" if is_healthy else "无法连接"}"""
 
     status_text = add_auto_delete_notice(status_text, ParseMode.HTML)
-    await message.edit_text(status_text, parse_mode=ParseMode.HTML)
+    await _safe_edit_message(message.edit_text, status_text, parse_mode=ParseMode.HTML)
 
     logger.info(
         "runtime_state_updated",
@@ -1007,7 +614,7 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if not (REPO_ROOT / ".git").exists():
         text = add_auto_delete_notice("❌ 当前运行目录不是 Git 仓库，无法自动更新", ParseMode.HTML)
-        await message.edit_text(text, parse_mode=ParseMode.HTML)
+        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
         return
 
     code, branch, error = await _run_command("git", "branch", "--show-current")
@@ -1017,7 +624,7 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"❌ 无法识别当前分支\n\n<code>{detail}</code>",
             ParseMode.HTML,
         )
-        await message.edit_text(text, parse_mode=ParseMode.HTML)
+        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
         return
 
     code, status_output, error = await _run_command("git", "status", "--porcelain")
@@ -1027,7 +634,7 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"❌ 无法检查仓库状态\n\n<code>{detail}</code>",
             ParseMode.HTML,
         )
-        await message.edit_text(text, parse_mode=ParseMode.HTML)
+        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
         return
 
     if status_output:
@@ -1038,7 +645,7 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"<code>{detail}</code>",
             ParseMode.HTML,
         )
-        await message.edit_text(text, parse_mode=ParseMode.HTML)
+        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
         return
 
     code, current_head, error = await _run_command("git", "rev-parse", "HEAD")
@@ -1048,10 +655,11 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"❌ 无法读取当前版本\n\n<code>{detail}</code>",
             ParseMode.HTML,
         )
-        await message.edit_text(text, parse_mode=ParseMode.HTML)
+        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
         return
 
-    await message.edit_text(
+    await _safe_edit_message(
+        message.edit_text,
         f"🔄 正在从 GitHub 拉取更新...\n\n分支: <code>{html.escape(branch)}</code>",
         parse_mode=ParseMode.HTML,
     )
@@ -1063,7 +671,7 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"❌ 拉取远端信息失败\n\n<code>{detail}</code>",
             ParseMode.HTML,
         )
-        await message.edit_text(text, parse_mode=ParseMode.HTML)
+        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
         return
 
     code, remote_head, error = await _run_command("git", "rev-parse", f"origin/{branch}")
@@ -1073,7 +681,7 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"❌ 无法读取远端版本\n\n<code>{detail}</code>",
             ParseMode.HTML,
         )
-        await message.edit_text(text, parse_mode=ParseMode.HTML)
+        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
         return
 
     current_short = html.escape(current_head[:7])
@@ -1087,10 +695,11 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"版本: <code>{current_short}</code>",
             ParseMode.HTML,
         )
-        await message.edit_text(text, parse_mode=ParseMode.HTML)
+        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
         return
 
-    await message.edit_text(
+    await _safe_edit_message(
+        message.edit_text,
         "⬇️ 发现新版本，正在更新代码...\n\n"
         f"分支: <code>{safe_branch}</code>\n"
         f"当前: <code>{current_short}</code>\n"
@@ -1105,7 +714,7 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"❌ 更新代码失败\n\n<code>{detail}</code>",
             ParseMode.HTML,
         )
-        await message.edit_text(text, parse_mode=ParseMode.HTML)
+        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
         return
 
     code, new_head, error = await _run_command("git", "rev-parse", "HEAD")
@@ -1115,7 +724,7 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"⚠️ 代码已拉取，但无法读取更新后的版本\n\n<code>{detail}</code>",
             ParseMode.HTML,
         )
-        await message.edit_text(text, parse_mode=ParseMode.HTML)
+        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
         return
 
     code, changed_files_output, changed_files_error = await _run_command(
@@ -1124,7 +733,8 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     changed_files = set(changed_files_output.splitlines()) if code == 0 else set()
 
     if "requirements.txt" in changed_files:
-        await message.edit_text(
+        await _safe_edit_message(
+            message.edit_text,
             "📦 代码更新完成，正在安装依赖...\n\n"
             f"新版本: <code>{html.escape(new_head[:7])}</code>",
             parse_mode=ParseMode.HTML,
@@ -1146,7 +756,7 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"<code>{detail}</code>",
                 ParseMode.HTML,
             )
-            await message.edit_text(text, parse_mode=ParseMode.HTML)
+            await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
             return
 
     logger.info(
@@ -1164,7 +774,7 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"新版本: <code>{html.escape(new_head[:7])}</code>",
         ParseMode.HTML,
     )
-    await message.edit_text(text, parse_mode=ParseMode.HTML)
+    await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
     asyncio.create_task(_restart_process())
 
 
@@ -1242,359 +852,6 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
     
     await perform_search(update, context, keyword)
 
-
-async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """欢迎新成员加入群组"""
-    if not update.message or not update.message.new_chat_members:
-        return
-    
-    chat = update.effective_chat
-    
-    # 只处理群组和超级群组
-    if chat.type not in ["group", "supergroup"]:
-        return
-    
-    for member in update.message.new_chat_members:
-        # 跳过机器人自己
-        if member.is_bot:
-            continue
-        safe_member_name = html.escape(member.first_name or "新朋友")
-        
-        welcome_text = f"""👋 欢迎 <b>{safe_member_name}</b> 加入群组！
-
-我是 <b>网盘搜索机器人</b>，可以帮你搜索各种网盘资源。
-
-<b>🎯 使用方式：</b>
-• 直接发送关键词，如：<code>复仇者联盟</code>
-• 使用命令：<code>/search 钢铁侠</code>
-• 群里可用：<code>/s 钢铁侠</code>
-
-💡 <b>提示：</b>
-• 搜索后会显示网盘类型按钮，点击即可查看结果
-• 支持百度、阿里、夸克、天翼等多种网盘
-• 所有消息将在 3 分钟后自动清理
-
-/help - 查看详细帮助"""
-        
-        try:
-            message = await update.message.reply_text(
-                welcome_text,
-                parse_mode=ParseMode.HTML
-            )
-            auto_delete_message(message)
-        except Exception as e:
-            logger.error("welcome_error", error=str(e), user_id=member.id)
-
-
-# ============ 搜索核心函数 ============
-
-async def _run_search_flow(
-    *,
-    keyword: str,
-    user_id: int,
-    chat_id: int,
-    edit_message,
-    message_id: int,
-    limit: Optional[int] = None,
-    cloud_types: Optional[list] = None,
-    source_type: Optional[str] = None,
-    plugins: Optional[list] = None,
-    channels: Optional[list] = None,
-    force_refresh: bool = False,
-) -> None:
-    """统一处理普通搜索与回调触发的重新搜索。"""
-    user_settings = settings_manager.get_settings(user_id)
-
-    if limit is None:
-        limit = user_settings.result_limit
-    limit = max(1, min(limit, settings.max_result_limit))
-
-    if cloud_types is None:
-        cloud_types = user_settings.cloud_types
-
-    if source_type is None:
-        source_type = user_settings.source_type
-
-    filter_config = user_settings.get_filter_config()
-    safe_keyword = html.escape(keyword)
-
-    await _safe_edit_message(
-        edit_message,
-        f"🔍 正在搜索：<b>{safe_keyword}</b>...",
-        parse_mode=ParseMode.HTML,
-    )
-    schedule_message_deletion(chat_id, message_id)
-
-    try:
-        results = await pansou_client.search(
-            keyword=keyword,
-            channels=channels if channels is not None else (user_settings.channels if user_settings.channels else None),
-            plugins=plugins if plugins is not None else (user_settings.plugins if user_settings.plugins else None),
-            cloud_types=cloud_types,
-            source_type=source_type,
-            filter_config=filter_config,
-            limit=limit,
-            force_refresh=force_refresh,
-        )
-
-        if "error" in results:
-            safe_error = html.escape(str(results["error"]))
-            error_text = add_auto_delete_notice(f"❌ {safe_error}", ParseMode.HTML)
-            await _safe_edit_message(edit_message, error_text, parse_mode=ParseMode.HTML)
-            schedule_message_deletion(chat_id, message_id)
-            return
-
-        merged_by_type = results.get("merged_by_type", {})
-        total = results.get("total", 0)
-
-        if not merged_by_type or total == 0:
-            empty_text = add_auto_delete_notice(f"🔍 未找到与「{safe_keyword}」相关的资源", ParseMode.HTML)
-            await _safe_edit_message(edit_message, empty_text, parse_mode=ParseMode.HTML)
-            schedule_message_deletion(chat_id, message_id)
-            return
-
-        cache_key = _build_search_cache_key(chat_id, user_id, message_id)
-        search_cache.set(cache_key, {
-            "keyword": keyword,
-            "results": results,
-            "timestamp": time.time(),
-            "options": {
-                "limit": limit,
-                "cloud_types": cloud_types,
-                "source_type": source_type,
-                "plugins": plugins,
-                "channels": channels,
-            },
-        })
-
-        overview_text = pansou_client.format_overview(results, keyword)
-        overview_text = add_auto_delete_notice(overview_text, ParseMode.HTML)
-        type_buttons = pansou_client.get_type_buttons(results)
-        keyboard = create_type_keyboard(type_buttons, cache_key)
-
-        await _safe_edit_message(
-            edit_message,
-            overview_text,
-            reply_markup=keyboard,
-            parse_mode=ParseMode.HTML,
-        )
-        schedule_message_deletion(chat_id, message_id)
-
-        logger.info(
-            "search_completed",
-            keyword=keyword,
-            user_id=user_id,
-            total=total,
-            types=list(merged_by_type.keys()),
-        )
-    except Exception as e:
-        logger.error("search_error", error=str(e), keyword=keyword)
-        safe_error = html.escape(str(e))
-        error_text = add_auto_delete_notice(
-            f"❌ 搜索出错：{safe_error}\n\n请稍后重试或使用 /status 检查服务状态",
-            ParseMode.HTML,
-        )
-        await _safe_edit_message(edit_message, error_text, parse_mode=ParseMode.HTML)
-        schedule_message_deletion(chat_id, message_id)
-
-
-async def perform_search(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    keyword: str,
-    limit: Optional[int] = None,
-    cloud_types: Optional[list] = None,
-    source_type: Optional[str] = None,
-    plugins: Optional[list] = None,
-    channels: Optional[list] = None,
-    force_refresh: bool = False,
-) -> None:
-    """执行搜索并显示分类按钮"""
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    allowed, retry_after = check_search_rate_limit(user_id)
-    if not allowed:
-        await reply_with_auto_delete(update, f"⏳ 搜索太频繁了，请在 {retry_after} 秒后再试")
-        return
-
-    search_message = await update.message.reply_text(
-        f"🔍 正在搜索：<b>{html.escape(keyword)}</b>...",
-        parse_mode=ParseMode.HTML,
-    )
-
-    async def _edit_message(text: str, **kwargs):
-        return await search_message.edit_text(text, **kwargs)
-
-    await _run_search_flow(
-        keyword=keyword,
-        user_id=user_id,
-        chat_id=chat_id,
-        edit_message=_edit_message,
-        message_id=search_message.message_id,
-        limit=limit,
-        cloud_types=cloud_types,
-        source_type=source_type,
-        plugins=plugins,
-        channels=channels,
-        force_refresh=force_refresh,
-    )
-
-
-async def perform_search_from_callback(
-    query,
-    context: ContextTypes.DEFAULT_TYPE,
-    keyword: str,
-    user_id: int,
-    chat_id: int,
-    limit: Optional[int] = None,
-    cloud_types: Optional[list] = None,
-    source_type: Optional[str] = None,
-    plugins: Optional[list] = None,
-    channels: Optional[list] = None,
-    force_refresh: bool = True,
-) -> None:
-    """从回调查询执行搜索（用于重新搜索功能）"""
-    async def _edit_message(text: str, **kwargs):
-        return await query.edit_message_text(text, **kwargs)
-
-    await _run_search_flow(
-        keyword=keyword,
-        user_id=user_id,
-        chat_id=chat_id,
-        edit_message=_edit_message,
-        message_id=query.message.message_id,
-        limit=limit,
-        cloud_types=cloud_types,
-        source_type=source_type,
-        plugins=plugins,
-        channels=channels,
-        force_refresh=force_refresh,
-    )
-
-
-def create_type_keyboard(type_buttons: list, cache_key: str, page: int = 1) -> InlineKeyboardMarkup:
-    """创建网盘类型选择键盘"""
-    buttons = []
-    
-    # 每行2个按钮
-    row = []
-    for btn in type_buttons:
-        callback_data = f"type:{cache_key}:{btn['type']}:{page}"
-        
-        row.append(InlineKeyboardButton(
-            btn["text"],
-            callback_data=callback_data
-        ))
-        
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    
-    if row:
-        buttons.append(row)
-    
-    # 添加操作按钮
-    buttons.append([
-        InlineKeyboardButton("🔄 重新搜索", callback_data=f"refresh:{cache_key}"),
-        InlineKeyboardButton("📊 显示全部", callback_data=f"all:{cache_key}")
-    ])
-    
-    return InlineKeyboardMarkup(buttons)
-
-
-def _parse_cache_key_from_action(data: str, prefix: str) -> Optional[str]:
-    """从回调数据中解析缓存键。"""
-    if not data.startswith(prefix):
-        return None
-    cache_key = data[len(prefix):]
-    return cache_key or None
-
-
-def _parse_type_callback(data: str) -> tuple[Optional[str], Optional[str], Optional[int]]:
-    """解析 type 回调数据。"""
-    if not data.startswith("type:"):
-        return None, None, None
-
-    body = data[5:]
-    try:
-        cache_key, cloud_type, page = body.rsplit(":", 2)
-        return cache_key, cloud_type, int(page)
-    except ValueError:
-        return None, None, None
-
-
-def _is_cache_owner(
-    cache_key: str,
-    chat_id: int,
-    user_id: int,
-    message_id: Optional[int] = None,
-) -> bool:
-    """校验回调是否来自原搜索用户。"""
-    try:
-        parts = cache_key.split(":")
-        if len(parts) == 3:
-            cached_chat_id, cached_user_id, cached_message_id = parts
-            if message_id is None:
-                return False
-            return (
-                int(cached_chat_id) == chat_id
-                and int(cached_user_id) == user_id
-                and int(cached_message_id) == message_id
-            )
-
-        if len(parts) == 2:
-            cached_chat_id, cached_user_id = parts
-            return int(cached_chat_id) == chat_id and int(cached_user_id) == user_id
-    except (TypeError, ValueError):
-        pass
-    return False
-
-
-def create_pagination_keyboard(
-    cache_key: str, 
-    cloud_type: str, 
-    current_page: int, 
-    total_pages: int
-) -> InlineKeyboardMarkup:
-    """创建分页键盘"""
-    buttons = []
-    
-    # 分页按钮
-    nav_buttons = []
-    if current_page > 1:
-        nav_buttons.append(
-            InlineKeyboardButton(
-                "⬅️ 上一页", 
-                callback_data=f"type:{cache_key}:{cloud_type}:{current_page - 1}"
-            )
-        )
-    
-    nav_buttons.append(
-        InlineKeyboardButton(
-            f"{current_page}/{total_pages}", 
-            callback_data="noop"
-        )
-    )
-    
-    if current_page < total_pages:
-        nav_buttons.append(
-            InlineKeyboardButton(
-                "下一页 ➡️", 
-                callback_data=f"type:{cache_key}:{cloud_type}:{current_page + 1}"
-            )
-        )
-    
-    buttons.append(nav_buttons)
-    
-    # 返回和重新搜索按钮
-    buttons.append([
-        InlineKeyboardButton("🔙 返回分类", callback_data=f"back:{cache_key}"),
-        InlineKeyboardButton("🔄 重新搜索", callback_data=f"refresh:{cache_key}")
-    ])
-    
-    return InlineKeyboardMarkup(buttons)
-
-
 # ============ 回调处理 ============
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1605,7 +862,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if data == "noop":
-        await query.answer()
+        await query.answer("正在重新搜索...")
         return
     
     user_id = update.effective_user.id
@@ -1626,7 +883,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not cached:
             await query.answer()
             expired_text = add_auto_delete_notice("⚠️ 搜索结果已过期，请重新搜索", ParseMode.HTML)
-            await query.edit_message_text(expired_text, parse_mode=ParseMode.HTML)
+            await _safe_edit_message(query.edit_message_text, expired_text, parse_mode=ParseMode.HTML)
             schedule_message_deletion(chat_id, query.message.message_id)
             return
 
@@ -1636,7 +893,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.answer(f"⏳ 搜索太频繁了，请在 {retry_after} 秒后再试", show_alert=True)
             return
 
-        await query.answer()
+        await query.answer("正在重新搜索...")
         
         # 执行新搜索 - 使用 query 直接编辑消息
         try:
@@ -1652,7 +909,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception as e:
             logger.error("refresh_search_error", error=str(e))
             safe_error = html.escape(str(e))
-            await query.edit_message_text(
+            await _safe_edit_message(
+                query.edit_message_text,
                 f"❌ 重新搜索失败：{safe_error}\n\n请稍后重试",
                 parse_mode=ParseMode.HTML
             )
@@ -1669,11 +927,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not cached_data:
             await query.answer()
             expired_text = add_auto_delete_notice("⚠️ 搜索结果已过期，请重新搜索", ParseMode.HTML)
-            await query.edit_message_text(expired_text, parse_mode=ParseMode.HTML)
+            await _safe_edit_message(query.edit_message_text, expired_text, parse_mode=ParseMode.HTML)
             schedule_message_deletion(chat_id, query.message.message_id)
             return
         
-        await query.answer()
+        await query.answer("正在整理全部结果...")
 
         results = cached_data["results"]
         keyword = cached_data["keyword"]
@@ -1683,17 +941,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         formatted_text = pansou_client.format_results(results, keyword, per_type_limit=per_type_limit)
         formatted_text = add_auto_delete_notice(formatted_text, ParseMode.HTML)
         
-        if len(formatted_text) > 4000:
-            formatted_text = formatted_text[:3950] + "\n\n...（内容过长已截断）"
+        formatted_text = ensure_telegram_text(formatted_text, parse_mode=ParseMode.HTML)
         
-        buttons = [[
-            InlineKeyboardButton("🔙 返回分类", callback_data=f"back:{cache_key}"),
-            InlineKeyboardButton("🔄 重新搜索", callback_data=f"refresh:{cache_key}")
-        ]]
-        
-        await query.edit_message_text(
+        await _safe_edit_message(
+            query.edit_message_text,
             formatted_text,
-            reply_markup=InlineKeyboardMarkup(buttons),
+            reply_markup=create_all_results_keyboard(cache_key),
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True
         )
@@ -1712,11 +965,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not cached_data:
             await query.answer()
             expired_text = add_auto_delete_notice("⚠️ 搜索结果已过期，请重新搜索", ParseMode.HTML)
-            await query.edit_message_text(expired_text, parse_mode=ParseMode.HTML)
+            await _safe_edit_message(query.edit_message_text, expired_text, parse_mode=ParseMode.HTML)
             schedule_message_deletion(chat_id, query.message.message_id)
             return
         
-        await query.answer()
+        await query.answer("已返回分类")
 
         results = cached_data["results"]
         keyword = cached_data["keyword"]
@@ -1726,7 +979,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         type_buttons = pansou_client.get_type_buttons(results)
         keyboard = create_type_keyboard(type_buttons, cache_key)
         
-        await query.edit_message_text(
+        await _safe_edit_message(
+            query.edit_message_text,
             overview_text,
             reply_markup=keyboard,
             parse_mode=ParseMode.HTML
@@ -1750,7 +1004,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not cached_data:
             await query.answer()
             expired_text = add_auto_delete_notice("⚠️ 搜索结果已过期，请重新搜索", ParseMode.HTML)
-            await query.edit_message_text(expired_text, parse_mode=ParseMode.HTML)
+            await _safe_edit_message(query.edit_message_text, expired_text, parse_mode=ParseMode.HTML)
             schedule_message_deletion(chat_id, query.message.message_id)
             return
 
@@ -1762,8 +1016,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.answer("❌ 该类型暂无资源")
             return
 
-        await query.answer()
-        
         links = results["merged_by_type"][cloud_type]
         user_settings = settings_manager.get_settings(user_id)
         per_page = max(1, min(user_settings.result_limit, settings.max_result_limit))
@@ -1771,6 +1023,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         # 确保页码有效
         page = max(1, min(page, total_pages))
+        type_name = CLOUD_TYPE_NAMES.get(cloud_type, cloud_type)
+        await query.answer(f"{type_name} 第 {page}/{total_pages} 页")
         
         # 格式化该类型的结果
         formatted_text = pansou_client.format_type_results(
@@ -1782,7 +1036,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # 创建分页键盘
         keyboard = create_pagination_keyboard(cache_key, cloud_type, page, total_pages)
         
-        await query.edit_message_text(
+        await _safe_edit_message(
+            query.edit_message_text,
             formatted_text,
             reply_markup=keyboard,
             parse_mode=ParseMode.HTML,
@@ -1822,7 +1077,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # ============ 应用构建 ============
 
-async def _post_init(application: Application) -> None:
+async def _post_init(application) -> None:
     """启动后同步 Telegram 命令菜单。"""
     try:
         await application.bot.set_my_commands(BOT_COMMANDS)
@@ -1830,58 +1085,29 @@ async def _post_init(application: Application) -> None:
         logger.warning("set_bot_commands_failed", error=str(exc))
 
 
-def create_application() -> Application:
+def create_application():
     """创建并配置 Bot 应用"""
-    from bot_config import create_optimized_request
-    
-    application = (
-        Application.builder()
-        .token(settings.tg_bot_token)
-        .request(create_optimized_request())
-        .post_init(_post_init)
-        .concurrent_updates(True)
-        .build()
+    return build_application(
+        BotHandlerSet(
+            start=start_command,
+            help=help_command,
+            types=types_command,
+            sources=sources_command,
+            plugins=plugins_command,
+            channels=channels_command,
+            settings=settings_command,
+            filter=filter_command,
+            reset=reset_command,
+            status=status_command,
+            refresh=refresh_command,
+            update=update_command,
+            search=search_command,
+            callback=handle_callback,
+            private_message=handle_private_message,
+            error=error_handler,
+        ),
+        post_init=_post_init,
     )
-    
-    # 添加命令处理器
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("types", types_command))
-    application.add_handler(CommandHandler("sources", sources_command))
-    application.add_handler(CommandHandler("plugins", plugins_command))
-    application.add_handler(CommandHandler("channels", channels_command))
-    application.add_handler(CommandHandler("settings", settings_command))
-    application.add_handler(CommandHandler("filter", filter_command))
-    application.add_handler(CommandHandler("reset", reset_command))
-    application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("refresh", refresh_command))
-    application.add_handler(CommandHandler("update", update_command))
-    application.add_handler(CommandHandler("search", search_command))
-    application.add_handler(CommandHandler("s", search_command, filters=filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP))
-    
-    # 添加回调处理器
-    application.add_handler(CallbackQueryHandler(handle_callback))
-    
-    # 添加私聊消息处理器
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND,
-            handle_private_message
-        )
-    )
-    
-    # 添加新成员加入处理器（群组欢迎）
-    application.add_handler(
-        MessageHandler(
-            filters.StatusUpdate.NEW_CHAT_MEMBERS,
-            welcome_new_member
-        )
-    )
-    
-    # 添加错误处理器
-    application.add_error_handler(error_handler)
-    
-    return application
 
 
 async def main() -> None:
@@ -1905,12 +1131,10 @@ async def main() -> None:
         cache_logger_on_first_use=True,
     )
     
-    global bot_application
-    
     logger.info("bot_starting", log_level=settings.log_level)
     
     application = create_application()
-    bot_application = application
+    set_bot_application(application)
     
     logger.info("bot_started")
     await application.initialize()

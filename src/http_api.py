@@ -54,6 +54,14 @@ def _normalize_limit(value: Any) -> int:
     return max(1, min(limit, settings.max_result_limit))
 
 
+def _normalize_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _extract_filter_config(data: dict[str, Any]) -> Optional[dict[str, list[str]]]:
     raw_filter = data.get("filter")
     include = None
@@ -202,6 +210,7 @@ async def search_handler(request: web.Request) -> web.Response:
     cloud_types = _normalize_string_list(data.get("cloud_types"))
     source_type = _normalize_string(data.get("src") or data.get("source_type")) or None
     filter_config = _extract_filter_config(data)
+    force_refresh = _normalize_bool(data.get("refresh") or data.get("force_refresh"))
 
     logger.info(
         "http_api_search",
@@ -211,6 +220,7 @@ async def search_handler(request: web.Request) -> web.Response:
         plugins=plugins,
         cloud_types=cloud_types,
         source_type=source_type,
+        force_refresh=force_refresh,
         remote=request.remote,
     )
 
@@ -222,6 +232,7 @@ async def search_handler(request: web.Request) -> web.Response:
         source_type=source_type,
         filter_config=filter_config,
         limit=limit,
+        force_refresh=force_refresh,
     )
 
     if "error" in results:
