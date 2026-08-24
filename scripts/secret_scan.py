@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 BLOCKED_FILE_PATTERNS = [
+    re.compile(r"^\.env$"),
     re.compile(r"^\.env\.backup.*$"),
     re.compile(r"^\.env\..+$"),
 ]
@@ -23,33 +24,42 @@ TG_TOKEN_RE = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b")
 ALLOWED_FILES = {".env.example"}
 
 
-def is_git_ignored(rel: str) -> bool:
+def candidate_files() -> list[Path]:
+    """只扫描 Git 已跟踪或已暂存文件，避免读取生产状态目录。"""
     if not (ROOT / ".git").exists():
-        return False
+        excluded = {".git", ".venv", "venv", "data", "__pycache__", ".pytest_cache"}
+        return [
+            path
+            for path in ROOT.rglob("*")
+            if path.is_file()
+            and not excluded.intersection(path.relative_to(ROOT).parts)
+        ]
+
     result = subprocess.run(
-        ["git", "check-ignore", "-q", "--", rel],
+        ["git", "ls-files", "-z"],
         cwd=ROOT,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         check=False,
     )
-    return result.returncode == 0
+    if result.returncode != 0:
+        raise RuntimeError("git ls-files failed")
+    return [
+        ROOT / raw.decode("utf-8", errors="surrogateescape")
+        for raw in result.stdout.split(b"\0")
+        if raw
+    ]
 
 
 def scan() -> list[str]:
     problems: list[str] = []
 
-    for path in ROOT.rglob("*"):
+    for path in candidate_files():
         if not path.is_file():
             continue
 
         rel = path.relative_to(ROOT).as_posix()
         name = path.name
-
-        if ".git/" in rel or rel.startswith(".git/"):
-            continue
-        if is_git_ignored(rel):
-            continue
 
         if name not in ALLOWED_FILES:
             for pattern in BLOCKED_FILE_PATTERNS:

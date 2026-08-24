@@ -16,21 +16,18 @@ sys.path.insert(0, str(SRC))
 
 # 仅提供最小必需环境变量，避免 Settings 初始化失败
 os.environ.setdefault("TG_BOT_TOKEN", "SMOKE_TEST_TOKEN_PLACEHOLDER")
-os.environ.setdefault("HTTP_API_TOKEN", "smoke-test-token")
-os.environ.setdefault("REQUIRE_HTTP_API_TOKEN", "true")
+os.environ.setdefault("DATA_DIR", str(ROOT / "data"))
 
 MODULES = [
     "config",
     "runtime_state",
     "message_utils",
-    "maintenance",
     "search_options",
     "keyboards",
     "application_factory",
     "search_flow",
     "pansou_client",
     "user_settings",
-    "http_api",
     "bot",
 ]
 

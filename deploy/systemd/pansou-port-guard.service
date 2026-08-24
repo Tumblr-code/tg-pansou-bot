@@ -1,0 +1,17 @@
+[Unit]
+Description=Restrict PanSou port 8888 to loopback
+Before=pansou-native.service
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pansou-port-guard
+RemainAfterExit=yes
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

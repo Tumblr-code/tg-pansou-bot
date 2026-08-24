@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   tg-pansou-bot:
     build: .
@@ -7,6 +5,17 @@ services:
     env_file:
       - .env
     environment:
-      - PYTHONUNBUFFERED=1
-    # 使用 host 网络模式
+      PYTHONUNBUFFERED: "1"
+      DATA_DIR: /data
+      DROP_PENDING_UPDATES: "false"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     network_mode: host

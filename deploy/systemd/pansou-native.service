@@ -1,0 +1,45 @@
+[Unit]
+Description=PanSou Native Backend API
+After=network-online.target pansou-port-guard.service
+Wants=network-online.target
+Requires=pansou-port-guard.service
+
+[Service]
+Type=simple
+User=pansou
+Group=pansou
+WorkingDirectory=/opt/pansou/current
+EnvironmentFile=/etc/pansou/pansou.env
+ExecStart=/opt/pansou/current/bin/pansou
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateUsers=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/pansou
+
+[Install]
+WantedBy=multi-user.target

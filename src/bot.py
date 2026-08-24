@@ -2,42 +2,40 @@
 """
 Telegram Bot 主模块 - 支持分类按钮
 """
-import asyncio
 import html
-import sys
 
+from structlog import get_logger
 from telegram import BotCommand, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
-from structlog import get_logger
 
 from application_factory import BotHandlerSet
 from application_factory import create_application as build_application
 from config import settings
-from pansou_client import pansou_client, CLOUD_TYPE_NAMES, CLOUD_TYPE_ICONS
-from user_settings import settings_manager, CLOUD_TYPE_NAMES as SETTINGS_CLOUD_NAMES
 from keyboards import (
     create_all_results_keyboard,
     create_pagination_keyboard,
     create_type_keyboard,
+)
+from keyboards import (
     is_cache_owner as _is_cache_owner,
+)
+from keyboards import (
     parse_cache_key_from_action as _parse_cache_key_from_action,
+)
+from keyboards import (
     parse_type_callback as _parse_type_callback,
 )
-from maintenance import (
-    PIP_INSTALL_TIMEOUT,
-    REPO_ROOT,
-    restart_process as _restart_process,
-    run_command as _run_command,
-    run_git_command as _run_git_command,
-    truncate_output as _truncate_output,
-)
+from logger import setup_logging
 from message_utils import (
     add_auto_delete_notice,
     ensure_telegram_text,
     reply_with_auto_delete,
+)
+from message_utils import (
     safe_edit_message as _safe_edit_message,
 )
+from pansou_client import CLOUD_TYPE_ICONS, CLOUD_TYPE_NAMES, pansou_client
 from runtime_state import (
     auto_delete_message,
     check_search_rate_limit,
@@ -45,16 +43,32 @@ from runtime_state import (
     search_cache,
     search_rate_limiter,
     set_bot_application,
-)
-from search_options import (
-    format_compact_list as _format_compact_list,
-    get_list_arg as _get_list_arg,
-    get_pansou_lists as _get_pansou_lists,
-    parse_csv_values as _parse_csv_values,
-    parse_search_options as _parse_search_options,
-    validate_values as _validate_values,
+    shutdown_runtime_state,
 )
 from search_flow import perform_search, perform_search_from_callback
+from search_options import (
+    format_compact_list as _format_compact_list,
+)
+from search_options import (
+    get_list_arg as _get_list_arg,
+)
+from search_options import (
+    get_pansou_lists as _get_pansou_lists,
+)
+from search_options import (
+    parse_csv_values as _parse_csv_values,
+)
+from search_options import (
+    parse_search_options as _parse_search_options,
+)
+from search_options import (
+    validate_keyword as _validate_keyword,
+)
+from search_options import (
+    validate_values as _validate_values,
+)
+from user_settings import CLOUD_TYPE_NAMES as SETTINGS_CLOUD_NAMES
+from user_settings import settings_manager
 
 logger = get_logger()
 
@@ -123,7 +137,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 /reset - 重置搜索设置
 /status - 检查服务状态
 /refresh - 刷新运行时状态
-/update - 拉取最新代码并重启
 /help - 查看详细帮助
 
 👑 <b>你是管理员，拥有所有权限</b>"""
@@ -188,7 +201,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 • <code>/channels</code> - 查看启用频道
 • <code>/reset</code> - 重置搜索设置
 • <code>/refresh</code> - 刷新缓存和连接状态
-• <code>/update</code> - 拉取最新代码并重启
 
 <b>📁 支持的网盘</b>
 百度、阿里、夸克、光鸭、天翼、UC、115、PikPak、迅雷、123、微云、蓝奏、坚果云、磁力、电驴"""
@@ -450,7 +462,7 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         lines = ["🔍 <b>当前过滤器设置</b>\n"]
         
         if user_settings.filter_include:
-            lines.append(f"<b>✅ 包含关键词：</b>")
+            lines.append("<b>✅ 包含关键词：</b>")
             for word in user_settings.filter_include:
                 lines.append(f"  • {word}")
         else:
@@ -459,7 +471,7 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         lines.append("")
         
         if user_settings.filter_exclude:
-            lines.append(f"<b>❌ 排除关键词：</b>")
+            lines.append("<b>❌ 排除关键词：</b>")
             for word in user_settings.filter_exclude:
                 lines.append(f"  • {word}")
         else:
@@ -540,6 +552,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         status_text = f"""✅ <b>服务状态正常</b>
 
 🤖 Bot: 运行中
+🏷️ 版本: <code>{html.escape(settings.app_version)}</code>
 🔍 Pansou API: 正常
 🔌 启用插件: {plugin_count}
 📡 默认频道: {channels_count}
@@ -555,9 +568,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 👑 你是管理员"""
     else:
-        status_text = """⚠️ <b>服务异常</b>
+        status_text = f"""⚠️ <b>服务异常</b>
 
 🤖 Bot: 运行中
+🏷️ 版本: <code>{html.escape(settings.app_version)}</code>
 🔍 Pansou API: 无法连接
 
 请稍后重试..."""
@@ -599,183 +613,7 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         cleared_rate_limiters=cleared_rate_limiters,
         cleared_settings_cache=cleared_settings_cache,
         pansou_healthy=is_healthy,
-        user_id=update.effective_user.id,
     )
-
-
-async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """处理 /update 命令 - 拉取最新代码并重启"""
-    if not check_admin_permission(update):
-        await reply_with_auto_delete(update, "⛔️ 该命令仅限管理员使用")
-        return
-
-    message = await update.message.reply_text("🔄 正在检查 GitHub 更新...")
-    auto_delete_message(message)
-
-    if not (REPO_ROOT / ".git").exists():
-        text = add_auto_delete_notice("❌ 当前运行目录不是 Git 仓库，无法自动更新", ParseMode.HTML)
-        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
-        return
-
-    code, branch, error = await _run_command("git", "branch", "--show-current")
-    if code != 0 or not branch:
-        detail = html.escape(_truncate_output(error or "无法识别当前分支"))
-        text = add_auto_delete_notice(
-            f"❌ 无法识别当前分支\n\n<code>{detail}</code>",
-            ParseMode.HTML,
-        )
-        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
-        return
-
-    code, status_output, error = await _run_command("git", "status", "--porcelain")
-    if code != 0:
-        detail = html.escape(_truncate_output(error or status_output or "无法检查仓库状态"))
-        text = add_auto_delete_notice(
-            f"❌ 无法检查仓库状态\n\n<code>{detail}</code>",
-            ParseMode.HTML,
-        )
-        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
-        return
-
-    if status_output:
-        detail = html.escape(_truncate_output(status_output, limit=600))
-        text = add_auto_delete_notice(
-            "⚠️ 检测到本地有未提交修改，已取消自动更新\n\n"
-            "请先提交或清理本地改动后再执行 /update\n\n"
-            f"<code>{detail}</code>",
-            ParseMode.HTML,
-        )
-        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
-        return
-
-    code, current_head, error = await _run_command("git", "rev-parse", "HEAD")
-    if code != 0 or not current_head:
-        detail = html.escape(_truncate_output(error or "无法读取当前版本"))
-        text = add_auto_delete_notice(
-            f"❌ 无法读取当前版本\n\n<code>{detail}</code>",
-            ParseMode.HTML,
-        )
-        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
-        return
-
-    await _safe_edit_message(
-        message.edit_text,
-        f"🔄 正在从 GitHub 拉取更新...\n\n分支: <code>{html.escape(branch)}</code>",
-        parse_mode=ParseMode.HTML,
-    )
-
-    code, fetch_output, fetch_error = await _run_git_command("fetch", "origin", branch)
-    if code != 0:
-        detail = html.escape(_truncate_output(fetch_error or fetch_output or "git fetch 失败"))
-        text = add_auto_delete_notice(
-            f"❌ 拉取远端信息失败\n\n<code>{detail}</code>",
-            ParseMode.HTML,
-        )
-        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
-        return
-
-    code, remote_head, error = await _run_command("git", "rev-parse", f"origin/{branch}")
-    if code != 0 or not remote_head:
-        detail = html.escape(_truncate_output(error or "无法读取远端版本"))
-        text = add_auto_delete_notice(
-            f"❌ 无法读取远端版本\n\n<code>{detail}</code>",
-            ParseMode.HTML,
-        )
-        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
-        return
-
-    current_short = html.escape(current_head[:7])
-    remote_short = html.escape(remote_head[:7])
-    safe_branch = html.escape(branch)
-
-    if current_head == remote_head:
-        text = add_auto_delete_notice(
-            "✅ 当前已经是最新版本\n\n"
-            f"分支: <code>{safe_branch}</code>\n"
-            f"版本: <code>{current_short}</code>",
-            ParseMode.HTML,
-        )
-        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
-        return
-
-    await _safe_edit_message(
-        message.edit_text,
-        "⬇️ 发现新版本，正在更新代码...\n\n"
-        f"分支: <code>{safe_branch}</code>\n"
-        f"当前: <code>{current_short}</code>\n"
-        f"远端: <code>{remote_short}</code>",
-        parse_mode=ParseMode.HTML,
-    )
-
-    code, pull_output, pull_error = await _run_command("git", "merge", "--ff-only", f"origin/{branch}")
-    if code != 0:
-        detail = html.escape(_truncate_output(pull_error or pull_output or "git merge 失败"))
-        text = add_auto_delete_notice(
-            f"❌ 更新代码失败\n\n<code>{detail}</code>",
-            ParseMode.HTML,
-        )
-        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
-        return
-
-    code, new_head, error = await _run_command("git", "rev-parse", "HEAD")
-    if code != 0 or not new_head:
-        detail = html.escape(_truncate_output(error or "更新后无法读取版本"))
-        text = add_auto_delete_notice(
-            f"⚠️ 代码已拉取，但无法读取更新后的版本\n\n<code>{detail}</code>",
-            ParseMode.HTML,
-        )
-        await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
-        return
-
-    code, changed_files_output, changed_files_error = await _run_command(
-        "git", "diff", "--name-only", current_head, new_head
-    )
-    changed_files = set(changed_files_output.splitlines()) if code == 0 else set()
-
-    if "requirements.txt" in changed_files:
-        await _safe_edit_message(
-            message.edit_text,
-            "📦 代码更新完成，正在安装依赖...\n\n"
-            f"新版本: <code>{html.escape(new_head[:7])}</code>",
-            parse_mode=ParseMode.HTML,
-        )
-        code, pip_output, pip_error = await _run_command(
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "-r",
-            "requirements.txt",
-            timeout=PIP_INSTALL_TIMEOUT,
-        )
-        if code != 0:
-            detail = html.escape(_truncate_output(pip_error or pip_output or "依赖安装失败"))
-            text = add_auto_delete_notice(
-                "⚠️ 代码已更新，但依赖安装失败，已取消自动重启\n\n"
-                f"当前版本: <code>{html.escape(new_head[:7])}</code>\n\n"
-                f"<code>{detail}</code>",
-                ParseMode.HTML,
-            )
-            await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
-            return
-
-    logger.info(
-        "bot_update_applied",
-        branch=branch,
-        old_head=current_head[:7],
-        new_head=new_head[:7],
-        user_id=update.effective_user.id,
-    )
-
-    text = add_auto_delete_notice(
-        "✅ 更新成功，正在重启机器人...\n\n"
-        f"分支: <code>{safe_branch}</code>\n"
-        f"旧版本: <code>{current_short}</code>\n"
-        f"新版本: <code>{html.escape(new_head[:7])}</code>",
-        ParseMode.HTML,
-    )
-    await _safe_edit_message(message.edit_text, text, parse_mode=ParseMode.HTML)
-    asyncio.create_task(_restart_process())
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -798,6 +636,10 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     if not keyword:
         await reply_with_auto_delete(update, "❌ 请输入搜索关键词", parse_mode=ParseMode.HTML)
+        return
+    keyword_error = _validate_keyword(keyword, settings.max_keyword_length)
+    if keyword_error:
+        await reply_with_auto_delete(update, f"❌ {html.escape(keyword_error)}", parse_mode=ParseMode.HTML)
         return
 
     if options.get("cloud_types"):
@@ -846,8 +688,9 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
         return
     
     keyword = update.message.text.strip()
-    if len(keyword) < 2:
-        await reply_with_auto_delete(update, "⚠️ 搜索关键词至少需要2个字符")
+    keyword_error = _validate_keyword(keyword, settings.max_keyword_length)
+    if keyword_error:
+        await reply_with_auto_delete(update, f"⚠️ {keyword_error}")
         return
     
     await perform_search(update, context, keyword)
@@ -906,12 +749,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 chat_id,
                 **cached.get("options", {}),
             )
-        except Exception as e:
-            logger.error("refresh_search_error", error=str(e))
-            safe_error = html.escape(str(e))
+        except Exception as exc:
+            logger.error("refresh_search_error", error_type=type(exc).__name__)
             await _safe_edit_message(
                 query.edit_message_text,
-                f"❌ 重新搜索失败：{safe_error}\n\n请稍后重试",
+                "❌ 重新搜索失败，请稍后重试",
                 parse_mode=ParseMode.HTML
             )
         return
@@ -1059,7 +901,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.debug("ignored_message_not_modified")
         return
 
-    logger.error("bot_error", error=error_text, update=update)
+    logger.error("bot_error", error_type=type(context.error).__name__)
 
     if update and update.effective_message:
         try:
@@ -1081,8 +923,21 @@ async def _post_init(application) -> None:
     """启动后同步 Telegram 命令菜单。"""
     try:
         await application.bot.set_my_commands(BOT_COMMANDS)
+        user = await application.bot.get_me()
+        logger.info(
+            "telegram_api_connected",
+            bot_username=user.username,
+            app_version=settings.app_version,
+        )
     except Exception as exc:
-        logger.warning("set_bot_commands_failed", error=str(exc))
+        logger.warning("telegram_post_init_failed", error_type=type(exc).__name__)
+
+
+async def _post_shutdown(application) -> None:
+    """Release shared clients and background tasks after polling stops."""
+    await shutdown_runtime_state()
+    await pansou_client.close()
+    logger.info("bot_stopped", app_version=settings.app_version)
 
 
 def create_application():
@@ -1100,67 +955,30 @@ def create_application():
             reset=reset_command,
             status=status_command,
             refresh=refresh_command,
-            update=update_command,
             search=search_command,
             callback=handle_callback,
             private_message=handle_private_message,
             error=error_handler,
         ),
         post_init=_post_init,
+        post_shutdown=_post_shutdown,
     )
 
 
-async def main() -> None:
-    """主入口"""
-    import structlog
-    structlog.configure(
-        processors=[
-            structlog.stdlib.filter_by_level,
-            structlog.stdlib.add_logger_name,
-            structlog.stdlib.add_log_level,
-            structlog.stdlib.PositionalArgumentsFormatter(),
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.processors.UnicodeDecoder(),
-            structlog.dev.ConsoleRenderer()
-        ],
-        context_class=dict,
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        wrapper_class=structlog.stdlib.BoundLogger,
-        cache_logger_on_first_use=True,
-    )
-    
-    logger.info("bot_starting", log_level=settings.log_level)
-    
+def run() -> None:
+    """Run the bot using python-telegram-bot's managed lifecycle."""
+    setup_logging()
+    logger.info("bot_starting", app_version=settings.app_version)
     application = create_application()
     set_bot_application(application)
-    
-    logger.info("bot_started")
-    await application.initialize()
-    await application.start()
-    
-    try:
-        bot = application.bot
-        user = await bot.get_me()
-        logger.info("telegram_api_connected", bot_name=user.first_name, bot_username=user.username)
-        print(f"✅ Telegram API 连接成功: {user.first_name} (@{user.username})")
-    except Exception as e:
-        logger.error("telegram_api_connection_failed", error=str(e))
-        print(f"❌ Telegram API 连接失败: {str(e)}")
-    
-    await application.updater.start_polling(
-        drop_pending_updates=True,
+    application.run_polling(
+        drop_pending_updates=settings.drop_pending_updates,
         poll_interval=0.5,
         timeout=60,
-        bootstrap_retries=3
+        bootstrap_retries=-1,
+        close_loop=True,
     )
-    
-    logger.info("bot_polling_started")
-    print("✅ 机器人轮询已启动")
-    
-    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run()

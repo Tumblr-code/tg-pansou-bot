@@ -1,427 +1,117 @@
-# TG Pansou Bot 部署教程
+# 生产部署与回滚
 
-本文档详细介绍如何部署 TG Pansou Bot。
+本文档对应 Ubuntu 24.04 + systemd。生产运行目录不可直接编辑；每次发布创建新的只读 release，再原子切换 `current`。
 
-## 📋 部署要求
+## 目录与权限
 
-- Linux 服务器（推荐 Ubuntu 22.04+）
-- Docker & Docker Compose
-- 或 Python 3.11+
-- 能访问 Telegram API 的网络
+```text
+/opt/tg-pansou-bot/
+  releases/<timestamp>-<sha>/
+  current -> releases/<candidate>
+  previous -> releases/<rollback>
+/var/lib/tg-pansou-bot/       0700 tgpansou:tgpansou
+/etc/tg-pansou-bot/bot.env   0640 root:tgpansou
 
----
-
-## 🐳 Docker 部署（推荐）
-
-### 步骤 1：安装 Docker
-
-```bash
-# 安装 Docker
-curl -fsSL https://get.docker.com | sh
-
-# 安装 Docker Compose
-apt-get install docker-compose-plugin
-
-# 启动 Docker
-systemctl enable docker
-systemctl start docker
+/opt/pansou/
+  releases/<timestamp>-<binary-sha>/
+  current -> releases/<candidate>
+  previous -> releases/<rollback>
+/var/lib/pansou/cache/        0700 pansou:pansou
+/etc/pansou/pansou.env        0640 root:pansou
 ```
 
-### 步骤 2：克隆项目
+创建服务账号和目录：
 
 ```bash
-cd /root
-git clone https://github.com/Tumblr-code/tg-pansou-bot.git
-cd tg-pansou-bot
+sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin tgpansou
+sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin pansou
+sudo install -d -o root -g root -m 0755 /opt/tg-pansou-bot/releases /opt/pansou/releases
+sudo install -d -o tgpansou -g tgpansou -m 0700 /var/lib/tg-pansou-bot
+sudo install -d -o pansou -g pansou -m 0700 /var/lib/pansou/cache
+sudo install -d -o root -g tgpansou -m 0750 /etc/tg-pansou-bot
+sudo install -d -o root -g pansou -m 0750 /etc/pansou
 ```
 
-### 步骤 3：创建 Bot 并获取 Token
-
-1. 打开 Telegram，搜索 @BotFather
-2. 发送 `/newbot`
-3. 输入 Bot 名称（如：网盘搜索助手）
-4. 输入 Bot 用户名（必须以 bot 结尾，如：pansou_search_bot）
-5. 复制获得的 Token（格式示例：`123456789:<telegram_bot_token>`）
-
-### 步骤 4：配置环境变量
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-填入你的配置：
+将现有环境文件复制到 `/etc/tg-pansou-bot/bot.env`，保留 Token，不要在终端输出内容；补充：
 
 ```env
-TG_BOT_TOKEN=123456789:<telegram_bot_token>
-PANSOU_API_URL=http://localhost:8888
-DEFAULT_RESULT_LIMIT=10
-MAX_RESULT_LIMIT=20
-SEARCH_TIMEOUT=30
-ADMIN_IDS=你的Telegram数字ID
+DATA_DIR=/var/lib/tg-pansou-bot
+APP_VERSION=<git-sha>
+DROP_PENDING_UPDATES=false
+MAX_CONCURRENT_SEARCHES=4
+SEARCH_QUEUE_TIMEOUT=8
+MAX_KEYWORD_LENGTH=128
 ```
 
-### 步骤 5：部署 pansou 服务
+设置 `0640 root:tgpansou`。PanSou 环境文件同理设置 `0640 root:pansou`，只把缓存路径改为 `/var/lib/pansou/cache`，其余插件、频道和缓存参数保持不变。
+
+## 构建 Bot 候选 release
+
+在干净的已合并提交中运行：
 
 ```bash
-docker run -d \
-  --name pansou \
-  -p 8888:8888 \
-  --restart unless-stopped \
-  ghcr.io/fish2018/pansou:latest
+sudo ./scripts/build_release.sh <git-sha>
 ```
 
-### 步骤 6：启动 Bot
+脚本输出候选目录；它只复制项目文件，排除 `.env`、`data/`、虚拟环境、日志和缓存，创建独立 `.venv`，按锁文件安装依赖，并执行离线 smoke、pytest、Ruff、secret scan 与 `pip check`。候选目录最终为 root 所有且不可由服务账号写入。
+
+安装单元：
 
 ```bash
-docker-compose up -d
+sudo install -o root -g root -m 0644 deploy/systemd/tg-pansou-bot.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 deploy/systemd/pansou-native.service /etc/systemd/system/
+sudo install -o root -g root -m 0755 deploy/pansou-port-guard.sh /usr/local/sbin/pansou-port-guard
+sudo install -o root -g root -m 0644 deploy/systemd/pansou-port-guard.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable pansou-port-guard.service pansou-native.service tg-pansou-bot.service
 ```
 
-### 步骤 7：验证部署
+## Bot 切换
+
+首次切换前确认已有外部备份。候选验证通过后：
 
 ```bash
-# 查看容器状态
-docker ps
-
-# 查看 Bot 日志
-docker logs -f tg-pansou-bot
+sudo systemctl stop tg-pansou-bot.service
+sudo rsync -a --chmod=Du=rwx,Dgo=,Fu=rw,Fgo= /root/tg-pansou-bot/data/ /var/lib/tg-pansou-bot/
+sudo chown -R tgpansou:tgpansou /var/lib/tg-pansou-bot
+sudo ./scripts/activate_release.sh /opt/tg-pansou-bot/releases/<candidate>
+sudo systemctl disable --now tg-pansou-http-api.service
+sudo rm -f /etc/systemd/system/tg-pansou-http-api.service
+sudo systemctl daemon-reload
 ```
 
----
-
-## 📦 本地部署
-
-### 步骤 1：安装 Python 3.11
+`activate_release.sh` 会保存旧 `current` 为 `previous`，原子切换后启动并检查 Bot；启动失败会立即恢复旧链接。确认 HTTP API 已退役：
 
 ```bash
-# Ubuntu/Debian
-apt-get update
-apt-get install python3.11 python3.11-venv python3-pip
-
-# 或使用 pyenv
-pyenv install 3.11.0
-pyenv global 3.11.0
+sudo ss -lntp | grep ':8090 ' && exit 1 || true
+sudo systemctl is-enabled tg-pansou-http-api.service 2>/dev/null && exit 1 || true
 ```
 
-### 步骤 2：克隆项目
+## PanSou 切换
+
+Bot 稳定后再单独迁移 PanSou，二进制、插件、频道和缓存配置版本必须保持不变。复制原 release 到 `/opt/pansou/releases/<timestamp>-<binary-sha>`，由 root 持有并移除组/其他写权限；短暂停服后将缓存最终同步到 `/var/lib/pansou/cache`，再原子切换 `/opt/pansou/current`。
+
+启动前必须先应用 `pansou-port-guard.service`。PanSou 即使监听 `*:8888`，IPv4/IPv6 的所有非 loopback 入站都应被 REJECT；Bot 仍通过 `127.0.0.1:8888` 访问。
+
+## 验证
 
 ```bash
-cd /root
-git clone https://github.com/Tumblr-code/tg-pansou-bot.git
-cd tg-pansou-bot
+systemctl is-active tg-pansou-bot.service pansou-native.service pansou-port-guard.service
+systemctl show -p User,Group,NRestarts tg-pansou-bot.service pansou-native.service
+systemd-analyze security tg-pansou-bot.service pansou-native.service
+curl --fail --silent http://127.0.0.1:8888/api/health
+ss -lntp | grep -E ':(8090|8888) '
+journalctl -u tg-pansou-bot.service -n 50 --no-pager
 ```
 
-### 步骤 3：创建虚拟环境
+还需完成：Telegram `getMe`、`/status`、一次真实搜索、分类、分页；PanSou 一次真实搜索与缓存写入；从另一台 LAN 主机验证 `192.168.0.35:8888` 的 IPv4/IPv6 都不可达；确认两个服务 `NRestarts=0`。
+
+## 回滚
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+sudo ./scripts/activate_release.sh /opt/tg-pansou-bot/previous
 ```
 
-### 步骤 4：安装依赖
+PanSou 回滚时单独停止服务，将 `current` 原子指回 `previous`，恢复旧单元后启动。出现反复重启、健康失败、设置文件异常或真实搜索失败时立即回滚。旧 `/root` 运行目录和完整备份至少保留 24 小时，不立即删除。
 
-```bash
-pip install -r requirements.txt
-```
-
-### 步骤 5：配置环境变量
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-### 步骤 6：部署 pansou 服务
-
-```bash
-docker run -d \
-  --name pansou \
-  -p 8888:8888 \
-  --restart unless-stopped \
-  ghcr.io/fish2018/pansou:latest
-```
-
-如果你使用的是已经本地运行的纯后端 Pansou API，只需要把 `PANSOU_API_URL` 指向对应地址即可，例如：
-
-```env
-PANSOU_API_URL=http://127.0.0.1:8888
-```
-
-Bot 会优先探测：
-
-- `GET /api/health`：健康状态、插件和频道信息
-- `GET /healthz`：兼容健康检查
-- `POST /api/search`：资源搜索
-
-### 步骤 7：运行 Bot
-
-```bash
-python main.py
-```
-
-首次启动后建议在 Telegram 里执行：
-
-```text
-/status
-/sources
-/plugins
-/channels
-```
-
-确认 Pansou API、插件和频道都能被 Bot 正确读取。
-
----
-
-## 🔧 高级配置
-
-### Pansou API 来源筛选
-
-当前版本支持按来源细化搜索：
-
-```text
-/search 三体 --src all --types quark,aliyun --plugins panta,wanou --channels tgsearchers4 --limit 10 --refresh
-```
-
-也可以设置管理员默认偏好：
-
-```text
-/settings source all
-/settings source plugin
-/settings source tg
-/settings types all
-/settings types quark,aliyun
-/settings plugins all
-/settings plugins panta,wanou
-/settings channels all
-/settings channels tgsearchers4
-```
-
-说明：
-
-- `--src all` 搜索全部来源
-- `--src plugin` 只搜插件来源
-- `--src tg` 只搜 Telegram 频道来源
-- `--refresh` 会跳过 Bot 本地短缓存，重新请求上游
-- 默认不传 `cloud_types`，避免新增网盘类型被 Bot 侧过滤
-
-### 群聊使用
-
-如果 Bot 在群组中使用，推荐用短命令：
-
-```text
-/s 关键词
-```
-
-普通 `/search 关键词` 仍然可用。
-
-### 使用 Docker Compose 同时部署
-
-创建 `docker-compose.yml`：
-
-```yaml
-version: '3.8'
-
-services:
-  pansou:
-    image: ghcr.io/fish2018/pansou:latest
-    container_name: pansou
-    ports:
-      - "8888:8888"
-    restart: unless-stopped
-    volumes:
-      - ./pansou-cache:/app/cache
-    environment:
-      - CACHE_ENABLED=true
-      - CACHE_MAX_SIZE=100MB
-      
-  tg-pansou-bot:
-    build: .
-    container_name: tg-pansou-bot
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      - PANSOU_API_URL=http://pansou:8888
-      - PYTHONUNBUFFERED=1
-    depends_on:
-      - pansou
-    network_mode: host  # 或使用自定义网络
-```
-
-启动：
-
-```bash
-docker-compose up -d
-```
-
-### 配置系统服务（systemd）
-
-#### 方式一：Docker 部署（推荐）
-
-创建服务文件：
-
-```bash
-cat > /etc/systemd/system/tg-pansou-bot.service << 'EOF'
-[Unit]
-Description=TG Pansou Bot
-After=docker.service
-Requires=docker.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-WorkingDirectory=/root/tg-pansou-bot
-ExecStart=/usr/bin/docker-compose up -d
-ExecStop=/usr/bin/docker-compose down
-TimeoutStartSec=0
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-启用服务：
-
-```bash
-systemctl enable tg-pansou-bot
-systemctl start tg-pansou-bot
-```
-
-#### 方式二：Python 本地运行
-
-如果需要使用 Python 直接运行（不使用 Docker），配置如下：
-
-**1. 创建 Pansou Docker 服务**
-
-```bash
-cat > /etc/systemd/system/pansou-docker.service << 'EOF'
-[Unit]
-Description=Pansou Docker Container
-After=docker.service
-Requires=docker.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/bin/docker start pansou
-ExecStop=/usr/bin/docker stop pansou
-Restart=no
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-**2. 创建 Bot 服务**
-
-```bash
-cat > /etc/systemd/system/tg-pansou-bot.service << 'EOF'
-[Unit]
-Description=TG Pansou Bot
-After=network.target docker.service pansou-docker.service
-Requires=docker.service
-
-[Service]
-Type=simple
-WorkingDirectory=/root/tg-pansou-bot
-Environment="HTTP_PROXY=http://127.0.0.1:7890"
-Environment="HTTPS_PROXY=http://127.0.0.1:7890"
-ExecStart=/bin/bash -c 'source venv/bin/activate && python3 main.py'
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-**3. 启用并启动服务**
-
-```bash
-systemctl daemon-reload
-systemctl enable pansou-docker tg-pansou-bot
-systemctl start pansou-docker tg-pansou-bot
-```
-
-**4. 查看状态**
-
-```bash
-systemctl status tg-pansou-bot pansou-docker
-```
-
----
-
-## 🔄 更新维护
-
-### 更新 Bot
-
-```bash
-cd /root/tg-pansou-bot
-git pull
-docker-compose down
-docker-compose up -d --build
-```
-
-### 查看日志
-
-```bash
-# 实时日志
-docker logs -f tg-pansou-bot
-
-# 最近 100 行
-docker logs --tail 100 tg-pansou-bot
-```
-
-### 备份数据
-
-```bash
-# 备份配置
-cp .env .env.backup
-
-# 备份数据
-tar -czvf tg-pansou-bot-backup-$(date +%Y%m%d).tar.gz \
-  .env data/ docker-compose.yml
-```
-
----
-
-## ❓ 常见问题
-
-### Q: Bot 启动后立即退出？
-
-A: 检查日志，通常是 Token 配置错误或网络问题：
-
-```bash
-docker logs tg-pansou-bot
-```
-
-### Q: 搜索无结果？
-
-A: 检查 pansou 服务是否正常：
-
-```bash
-curl http://localhost:8888/api/search \
-  -X POST \
-  -H "Content-Type: application/json" \
-  -d '{"keyword":"test","limit":1}'
-```
-
-### Q: 群组中使用无效？
-
-A: 确保：
-1. Bot 已被添加到群组
-2. Bot 有发送消息的权限
-3. 使用 `/search 关键词` 命令
-
-### Q: 网络超时？
-
-A: 检查服务器网络连接，确保能访问：
-- api.telegram.org
-- localhost:8888 (pansou)
-
----
-
-## 📞 获取帮助
-
-- GitHub Issues: https://github.com/Tumblr-code/tg-pansou-bot/issues
-- Telegram: @China_Nb_One
+SSH 策略、root 密码轮换和系统包升级不属于本项目发布；确认密钥登录后另行轮换已暴露的密码。
