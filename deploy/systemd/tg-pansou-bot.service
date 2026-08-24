@@ -1,8 +1,7 @@
 [Unit]
 Description=TG PanSou Telegram Bot
 After=network-online.target pansou-native.service
-Wants=network-online.target
-Requires=pansou-native.service
+Wants=network-online.target pansou-native.service
 
 [Service]
 Type=simple

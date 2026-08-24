@@ -24,6 +24,7 @@
 - 相同搜索请求继续合并并保留 120 秒缓存；等待者取消不会取消共享请求
 - 生产依赖按已验证版本精确锁定并缩减为实际运行所需包
 - PanSou 沙箱允许其 `bytedance/sonic` 运行时加载器调用 `mprotect`，其余非 root 与 systemd 防护保持不变
+- Bot 对 PanSou 使用弱依赖和启动顺序约束，PanSou 独立维护后 Bot 不会被永久停用
 
 ### Removed
 
