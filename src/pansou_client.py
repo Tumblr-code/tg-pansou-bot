@@ -100,10 +100,10 @@ class PansouClient:
         self.base_url = settings.pansou_api_url.rstrip('/')
         self.timeout = settings.search_timeout
         self.headers = {}
-        self.result_cache_ttl = 30
-        self.result_cache_size = 128
-        self.health_cache_ttl = 10
-        self.service_info_cache_ttl = 30
+        self.result_cache_ttl = 120
+        self.result_cache_size = 256
+        self.health_cache_ttl = 20
+        self.service_info_cache_ttl = 60
         self._result_cache: OrderedDict[str, tuple[float, Dict[str, Any]]] = OrderedDict()
         self._inflight_searches: Dict[str, asyncio.Task] = {}
         self._health_cache_value: Optional[bool] = None
