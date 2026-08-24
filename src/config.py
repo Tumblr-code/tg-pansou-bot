@@ -1,13 +1,20 @@
-"""
-Bot 配置模块
-"""
-from typing import Optional, List
-from pydantic_settings import BaseSettings
-from pydantic import Field
+"""Bot configuration."""
+from pathlib import Path
+from typing import List, Optional
+
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """应用配置"""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
     
     # Telegram Bot 配置
     tg_bot_token: str = Field(..., description="Telegram Bot Token")
@@ -30,6 +37,14 @@ class Settings(BaseSettings):
     
     # 速率限制
     rate_limit_per_minute: int = Field(default=10, ge=1, description="每分钟速率限制")
+
+    # 运行与容量配置
+    data_dir: Path = Field(default=Path("./data"), description="用户设置目录")
+    app_version: str = Field(default="dev", min_length=1, max_length=128, description="部署版本")
+    drop_pending_updates: bool = Field(default=False, description="启动时是否丢弃待处理更新")
+    max_concurrent_searches: int = Field(default=4, ge=1, le=32, description="最大并发搜索数")
+    search_queue_timeout: float = Field(default=8.0, ge=0.1, le=60.0, description="搜索排队超时")
+    max_keyword_length: int = Field(default=128, ge=2, le=4096, description="搜索关键词最大长度")
     
     # 默认搜索频道（可选）
     default_channels: Optional[str] = Field(default=None, description="默认搜索频道，逗号分隔")
@@ -40,16 +55,30 @@ class Settings(BaseSettings):
     # 管理员配置
     admin_ids: Optional[str] = Field(default=None, description="管理员ID列表，逗号分隔")
 
-    # HTTP API 配置
-    http_api_host: str = Field(default="127.0.0.1", description="HTTP API 监听地址")
-    http_api_port: int = Field(default=8090, ge=1, le=65535, description="HTTP API 监听端口")
-    http_api_token: Optional[str] = Field(default=None, description="HTTP API 访问令牌")
-    require_http_api_token: bool = Field(default=True, description="HTTP API 是否强制要求访问令牌")
+    @field_validator("log_level")
+    @classmethod
+    def validate_log_level(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if normalized not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+            raise ValueError("LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, or CRITICAL")
+        return normalized
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    @field_validator("admin_ids")
+    @classmethod
+    def validate_admin_ids(cls, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return value
+        for item in value.split(","):
+            item = item.strip()
+            if item and (not item.isdigit() or int(item) <= 0):
+                raise ValueError("ADMIN_IDS must be comma-separated positive integers")
+        return value
+
+    @model_validator(mode="after")
+    def validate_result_limits(self):
+        if self.default_result_limit > self.max_result_limit:
+            raise ValueError("DEFAULT_RESULT_LIMIT cannot exceed MAX_RESULT_LIMIT")
+        return self
     
     def get_proxies(self) -> Optional[dict]:
         """获取代理配置"""
@@ -80,8 +109,7 @@ class Settings(BaseSettings):
     
     def is_admin(self, user_id: int) -> bool:
         """检查用户是否为管理员"""
-        admins = self.get_admin_ids()
-        return user_id in admins
+        return user_id in self.get_admin_ids()
 
 
 # 全局配置实例

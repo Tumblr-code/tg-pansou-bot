@@ -1,0 +1,48 @@
+[Unit]
+Description=TG PanSou Telegram Bot
+After=network-online.target pansou-native.service
+Wants=network-online.target
+Requires=pansou-native.service
+
+[Service]
+Type=simple
+User=tgpansou
+Group=tgpansou
+WorkingDirectory=/opt/tg-pansou-bot/current
+EnvironmentFile=/etc/tg-pansou-bot/bot.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/tg-pansou-bot/current/.venv/bin/python /opt/tg-pansou-bot/current/main.py
+Restart=always
+RestartSec=10
+TimeoutStopSec=45
+KillSignal=SIGINT
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateUsers=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/tg-pansou-bot
+
+[Install]
+WantedBy=multi-user.target

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import OrderedDict, deque
+from contextlib import suppress
 from typing import Any
 
 from telegram import Message
@@ -102,7 +103,7 @@ _deletion_tasks: dict[tuple[int, int], float] = {}
 _cleanup_task: asyncio.Task | None = None
 
 
-def set_bot_application(application: Application) -> None:
+def set_bot_application(application: Application | None) -> None:
     global _bot_application
     _bot_application = application
 
@@ -112,7 +113,7 @@ async def _cleanup_worker():
     try:
         while _deletion_tasks:
             await asyncio.sleep(5)
-            now = asyncio.get_event_loop().time()
+            now = asyncio.get_running_loop().time()
             to_delete = [
                 (chat_id, msg_id)
                 for (chat_id, msg_id), delete_time in _deletion_tasks.items()
@@ -145,8 +146,21 @@ def auto_delete_message(message: Message, delay: int = AUTO_DELETE_DELAY):
 
 
 def schedule_message_deletion(chat_id: int, message_id: int, delay: int = AUTO_DELETE_DELAY):
-    _deletion_tasks[(chat_id, message_id)] = asyncio.get_event_loop().time() + delay
+    _deletion_tasks[(chat_id, message_id)] = asyncio.get_running_loop().time() + delay
     _ensure_cleanup_worker()
+
+
+async def shutdown_runtime_state() -> None:
+    """Cancel background work and release Telegram application references."""
+    global _bot_application, _cleanup_task
+    task = _cleanup_task
+    _cleanup_task = None
+    if task and not task.done():
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+    _deletion_tasks.clear()
+    _bot_application = None
 
 
 def check_search_rate_limit(user_id: int) -> tuple[bool, int]:

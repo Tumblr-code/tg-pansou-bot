@@ -1,5 +1,5 @@
 #!/bin/bash
-# Bot 启动脚本 - 使用 PM2 管理
+# Bot 启动脚本（前台运行，交由 systemd 或容器管理）
 
 set -e
 
@@ -16,16 +16,6 @@ if grep -q "TG_BOT_TOKEN=你的BotToken\|TG_BOT_TOKEN=$" .env; then
     exit 1
 fi
 
-echo "🚀 启动 Telegram Bot (使用 PM2)..."
-
-cd /root/tg-pansou-bot
-
-if command -v pm2 &> /dev/null; then
-    pm2 start main.py --name tg-pansou-bot
-    pm2 save
-    echo "✅ Bot 已启动 (PM2)"
-    echo "查看日志: pm2 logs tg-pansou-bot"
-else
-    echo "⚠️ PM2 未安装，将直接运行..."
-    python3 main.py
-fi
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+cd "$script_dir"
+exec python3 main.py

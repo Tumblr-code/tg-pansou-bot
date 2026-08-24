@@ -9,7 +9,8 @@ import html
 import re
 import time
 from collections import OrderedDict
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
+
 import httpx
 from structlog import get_logger
 
@@ -112,6 +113,7 @@ class PansouClient:
         self._service_info_cache_value: Optional[Dict[str, Any]] = None
         self._service_info_cache_expires_at = 0.0
         self._service_info_task: Optional[asyncio.Task] = None
+        self._search_semaphore = asyncio.Semaphore(settings.max_concurrent_searches)
         if settings.pansou_api_token:
             self.headers["Authorization"] = f"Bearer {settings.pansou_api_token}"
     
@@ -127,7 +129,7 @@ class PansouClient:
                     
                     timeout = httpx.Timeout(
                         connect=5.0,
-                        read=30.0,
+                        read=float(self.timeout),
                         write=10.0,
                         pool=5.0
                     )
@@ -143,12 +145,29 @@ class PansouClient:
                         proxy=proxy,
                         headers=self.headers,
                         limits=limits,
-                        http2=True
+                        http2=False,
+                        trust_env=False,
                     )
         return self._client
     
     async def close(self):
-        """关闭客户端连接"""
+        """Cancel in-flight work and close the shared HTTP client."""
+        tasks = {
+            task
+            for task in (
+                *self._inflight_searches.values(),
+                self._health_check_task,
+                self._service_info_task,
+            )
+            if task and not task.done()
+        }
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._inflight_searches.clear()
+        self._health_check_task = None
+        self._service_info_task = None
         if self._client and not self._client.is_closed:
             await self._client.aclose()
             self._client = None
@@ -276,9 +295,8 @@ class PansouClient:
             logger.error(
                 "search_failed",
                 code=raw_data.get("code"),
-                message=raw_data.get("message"),
             )
-            return {"error": raw_data.get("message", "搜索失败")}
+            return {"error": "搜索服务暂时不可用，请稍后重试"}
 
         payload = raw_data.get("data") if isinstance(raw_data, dict) and "data" in raw_data else raw_data
         if payload is None:
@@ -373,7 +391,7 @@ class PansouClient:
         for attempt in range(max_retries):
             try:
                 client = await self._get_client()
-                response = await client.post(url, json=payload, timeout=self.timeout)
+                response = await client.post(url, json=payload)
                 response.raise_for_status()
                 data = response.json()
                 result = self._normalize_search_result(data)
@@ -394,20 +412,56 @@ class PansouClient:
             except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as e:
                 if attempt < max_retries - 1:
                     wait_time = min(0.5 * (2 ** attempt), 5.0)
-                    logger.warning("search_retry", keyword=keyword, attempt=attempt + 1, wait=wait_time, error=str(e))
+                    logger.warning(
+                        "search_retry",
+                        keyword_length=len(keyword),
+                        attempt=attempt + 1,
+                        wait=wait_time,
+                        error_type=type(e).__name__,
+                    )
                     await asyncio.sleep(wait_time)
                     continue
 
-                logger.error("search_failed_after_retries", keyword=keyword, error=str(e))
+                logger.error(
+                    "search_failed_after_retries",
+                    keyword_length=len(keyword),
+                    error_type=type(e).__name__,
+                )
                 if isinstance(e, httpx.TimeoutException):
                     return {"error": "搜索超时，请稍后重试"}
                 return {"error": "网络连接失败，请稍后重试"}
             except httpx.HTTPStatusError as e:
-                logger.error("search_http_error", status=e.response.status_code, detail=str(e))
+                logger.error("search_http_error", status=e.response.status_code)
                 return {"error": f"搜索服务错误: HTTP {e.response.status_code}"}
             except Exception as e:
-                logger.error("search_exception", error=str(e))
-                return {"error": f"搜索出错: {str(e)}"}
+                logger.error("search_exception", error_type=type(e).__name__)
+                return {"error": "搜索服务暂时不可用，请稍后重试"}
+
+    async def _execute_search_with_capacity(self, **kwargs) -> Dict[str, Any]:
+        """Bound expensive fan-out searches and fail fast when the queue is full."""
+        try:
+            await asyncio.wait_for(
+                self._search_semaphore.acquire(),
+                timeout=settings.search_queue_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("search_capacity_timeout")
+            return {"error": "搜索服务繁忙，请稍后重试", "error_code": "SEARCH_BUSY"}
+
+        try:
+            return await self._execute_search_request(**kwargs)
+        finally:
+            self._search_semaphore.release()
+
+    async def _run_search_and_cache(self, cache_key: str, **kwargs) -> Dict[str, Any]:
+        result = await self._execute_search_with_capacity(**kwargs)
+        if "error" not in result:
+            self._store_cached_result(cache_key, result)
+        return result
+
+    def _remove_inflight_search(self, cache_key: str, task: asyncio.Task) -> None:
+        if self._inflight_searches.get(cache_key) is task:
+            self._inflight_searches.pop(cache_key, None)
 
     async def search(
         self,
@@ -424,6 +478,15 @@ class PansouClient:
         """
         搜索网盘资源（指数退避重试）
         """
+        keyword = keyword.strip()
+        if len(keyword) < 2:
+            return {"error": "搜索关键词至少需要2个字符", "error_code": "INVALID_KEYWORD"}
+        if len(keyword) > settings.max_keyword_length:
+            return {
+                "error": f"搜索关键词不能超过{settings.max_keyword_length}个字符",
+                "error_code": "INVALID_KEYWORD",
+            }
+
         url = f"{self.base_url}/api/search"
         
         payload = {
@@ -458,16 +521,17 @@ class PansouClient:
         if not force_refresh:
             cached_result = self._get_cached_result(cache_key)
             if cached_result is not None:
-                logger.debug("search_cache_hit", keyword=keyword)
+                logger.debug("search_cache_hit", keyword_length=len(keyword))
                 return cached_result
 
         inflight_task = self._inflight_searches.get(cache_key)
         if inflight_task:
-            logger.debug("search_join_inflight", keyword=keyword)
-            return await inflight_task
+            logger.debug("search_join_inflight", keyword_length=len(keyword))
+            return await asyncio.shield(inflight_task)
 
         task = asyncio.create_task(
-            self._execute_search_request(
+            self._run_search_and_cache(
+                cache_key,
                 url=url,
                 payload=payload,
                 keyword=keyword,
@@ -476,14 +540,10 @@ class PansouClient:
             )
         )
         self._inflight_searches[cache_key] = task
-
-        try:
-            result = await task
-            if "error" not in result:
-                self._store_cached_result(cache_key, result)
-            return result
-        finally:
-            self._inflight_searches.pop(cache_key, None)
+        task.add_done_callback(
+            lambda finished, key=cache_key: self._remove_inflight_search(key, finished)
+        )
+        return await asyncio.shield(task)
     
     def _apply_filter(
         self, 
@@ -547,7 +607,7 @@ class PansouClient:
             return self._service_info_cache_value
 
         if self._service_info_task:
-            return await self._service_info_task
+            return await asyncio.shield(self._service_info_task)
 
         async def _run_service_info() -> Dict[str, Any]:
             client = await self._get_client()
@@ -559,7 +619,7 @@ class PansouClient:
                         data["healthy"] = True
                         return data
             except Exception as exc:
-                logger.warning("service_info_failed", error=str(exc))
+                logger.warning("service_info_failed", error_type=type(exc).__name__)
 
             for url in (f"{self.base_url}/healthz",):
                 for method in ("HEAD", "GET"):
@@ -572,17 +632,27 @@ class PansouClient:
 
             return {"healthy": False, "status": "unavailable"}
 
-        self._service_info_task = asyncio.create_task(_run_service_info())
-        try:
-            result = await self._service_info_task
+        async def _load_and_cache_service_info() -> Dict[str, Any]:
+            result = await _run_service_info()
             self._service_info_cache_value = result
             self._service_info_cache_expires_at = time.monotonic() + self.service_info_cache_ttl
             healthy = bool(result.get("healthy"))
             self._health_cache_value = healthy
             self._health_cache_expires_at = time.monotonic() + self.health_cache_ttl
             return result
-        finally:
-            self._service_info_task = None
+
+        task = asyncio.create_task(_load_and_cache_service_info())
+        self._service_info_task = task
+
+        def clear_service_task(finished: asyncio.Task) -> None:
+            if self._service_info_task is finished:
+                self._service_info_task = None
+
+        task.add_done_callback(clear_service_task)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            raise
 
     async def health_check(self, force_refresh: bool = False) -> bool:
         """检查 pansou 服务是否健康"""
@@ -591,20 +661,27 @@ class PansouClient:
             return self._health_cache_value
 
         if self._health_check_task:
-            return await self._health_check_task
+            return await asyncio.shield(self._health_check_task)
 
         async def _run_health_check() -> bool:
             info = await self.get_service_info(force_refresh=force_refresh)
             return bool(info.get("healthy"))
 
-        self._health_check_task = asyncio.create_task(_run_health_check())
-        try:
-            result = await self._health_check_task
+        async def _load_and_cache_health() -> bool:
+            result = await _run_health_check()
             self._health_cache_value = result
             self._health_cache_expires_at = time.monotonic() + self.health_cache_ttl
             return result
-        finally:
-            self._health_check_task = None
+
+        task = asyncio.create_task(_load_and_cache_health())
+        self._health_check_task = task
+
+        def clear_health_task(finished: asyncio.Task) -> None:
+            if self._health_check_task is finished:
+                self._health_check_task = None
+
+        task.add_done_callback(clear_health_task)
+        return await asyncio.shield(task)
     
     def _clean_text(self, text: str) -> str:
         """清理文本，移除可能导致格式问题的字符"""
@@ -735,10 +812,9 @@ class PansouClient:
             return f"❌ 搜索失败: {results['error']}"
         
         merged_by_type = results.get("merged_by_type", {})
-        total = results.get("total", 0)
-        
+
         if cloud_type not in merged_by_type or not merged_by_type[cloud_type]:
-            return f"🔍 该类型下暂无资源"
+            return "🔍 该类型下暂无资源"
         
         links = merged_by_type[cloud_type]
         type_name = CLOUD_TYPE_NAMES.get(cloud_type, cloud_type)

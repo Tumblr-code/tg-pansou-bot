@@ -8,10 +8,30 @@ from typing import Any, Optional
 from pansou_client import pansou_client
 
 MAX_LIST_MESSAGE_LENGTH = 3300
+MAX_OPTION_ITEMS = 32
+MAX_OPTION_ITEM_LENGTH = 64
 
 
 def parse_csv_values(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def validate_keyword(keyword: str, max_length: int) -> Optional[str]:
+    length = len(keyword.strip())
+    if length < 2:
+        return "搜索关键词至少需要2个字符"
+    if length > max_length:
+        return f"搜索关键词不能超过{max_length}个字符"
+    return None
+
+
+def _bounded_csv_values(raw: str) -> tuple[list[str], Optional[str]]:
+    values = parse_csv_values(raw)
+    if len(values) > MAX_OPTION_ITEMS:
+        return [], f"单次最多指定{MAX_OPTION_ITEMS}项"
+    if any(len(value) > MAX_OPTION_ITEM_LENGTH for value in values):
+        return [], f"单项名称不能超过{MAX_OPTION_ITEM_LENGTH}个字符"
+    return values, None
 
 
 def format_compact_list(values: list[str], *, limit: int = MAX_LIST_MESSAGE_LENGTH) -> str:
@@ -89,17 +109,35 @@ def parse_search_options(raw_text: str) -> tuple[str, dict[str, Any], Optional[s
             value = value if value is not None else next_value()
             if not value:
                 return "", {}, "缺少网盘类型参数"
-            options["cloud_types"] = [] if value.lower() in ("all", "全部") else parse_csv_values(value)
+            if value.lower() in ("all", "全部"):
+                options["cloud_types"] = []
+            else:
+                parsed, error = _bounded_csv_values(value)
+                if error:
+                    return "", {}, error
+                options["cloud_types"] = parsed
         elif key == "--plugins":
             value = value if value is not None else next_value()
             if not value:
                 return "", {}, "缺少插件参数"
-            options["plugins"] = [] if value.lower() in ("all", "全部") else parse_csv_values(value)
+            if value.lower() in ("all", "全部"):
+                options["plugins"] = []
+            else:
+                parsed, error = _bounded_csv_values(value)
+                if error:
+                    return "", {}, error
+                options["plugins"] = parsed
         elif key == "--channels":
             value = value if value is not None else next_value()
             if not value:
                 return "", {}, "缺少频道参数"
-            options["channels"] = [] if value.lower() in ("all", "全部") else parse_csv_values(value)
+            if value.lower() in ("all", "全部"):
+                options["channels"] = []
+            else:
+                parsed, error = _bounded_csv_values(value)
+                if error:
+                    return "", {}, error
+                options["channels"] = parsed
         elif key == "--limit":
             value = value if value is not None else next_value()
             try:

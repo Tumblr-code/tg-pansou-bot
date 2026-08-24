@@ -6,10 +6,10 @@ import html
 import re
 from typing import Optional
 
+from structlog import get_logger
 from telegram import InlineKeyboardMarkup, Message, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
-from structlog import get_logger
 
 from runtime_state import auto_delete_message
 
@@ -67,7 +67,7 @@ async def safe_edit_message(edit_message, text: str, **kwargs):
                 continue
             return None
         except (TimedOut, NetworkError) as exc:
-            logger.warning("telegram_edit_transient_error", error=str(exc))
+            logger.warning("telegram_edit_transient_error", error_type=type(exc).__name__)
             return None
     return None
 

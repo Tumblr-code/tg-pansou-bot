@@ -7,6 +7,28 @@
 
 ## [Unreleased]
 
+### Production hardening
+
+### Added
+
+- 新增原子 release 构建、`current`/`previous` 切换和失败自动回滚脚本
+- 新增 `tgpansou`、`pansou` 专用用户的 systemd 沙箱单元与 8888 loopback 防火墙守卫
+- 新增 Python 3.11/3.12 pytest、Ruff、依赖一致性和 Docker 构建 CI
+- 新增搜索并发、排队超时、关键词边界、分阶段 HTTP 超时和只读 `APP_VERSION`
+
+### Changed
+
+- 用户设置迁移至可配置的 `DATA_DIR`，采用 `fsync` + `os.replace` 原子写入；损坏或未知结构文件会先隔离
+- 正常关闭由 python-telegram-bot 生命周期管理，并关闭共享 HTTP 客户端与后台任务
+- JSON 日志真正应用 `LOG_LEVEL`，只记录耗时、结果数、缓存命中和错误类别等非敏感指标
+- 相同搜索请求继续合并并保留 120 秒缓存；等待者取消不会取消共享请求
+- 生产依赖按已验证版本精确锁定并缩减为实际运行所需包
+
+### Removed
+
+- 完整移除无人使用的 HTTP API、8090 服务、配置与 `aiohttp` 依赖
+- 完整移除 `/update`、Git/PIP 子进程维护逻辑和相关菜单项
+
 ### 🔎 Pansou API 适配与来源管理
 
 ### Added

@@ -8,13 +8,12 @@ from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
-    ContextTypes,
     MessageHandler,
     filters,
 )
 
-from config import settings
 from bot_config import create_optimized_request
+from config import settings
 
 
 @dataclass(frozen=True)
@@ -30,7 +29,6 @@ class BotHandlerSet:
     reset: Callable
     status: Callable
     refresh: Callable
-    update: Callable
     search: Callable
     callback: Callable
     private_message: Callable
@@ -40,13 +38,15 @@ class BotHandlerSet:
 def create_application(
     handlers: BotHandlerSet,
     post_init: Callable[[Application], Awaitable[None]],
+    post_shutdown: Callable[[Application], Awaitable[None]],
 ) -> Application:
     application = (
         Application.builder()
         .token(settings.tg_bot_token)
         .request(create_optimized_request())
         .post_init(post_init)
-        .concurrent_updates(True)
+        .post_shutdown(post_shutdown)
+        .concurrent_updates(32)
         .build()
     )
 
@@ -62,7 +62,6 @@ def create_application(
         ("reset", handlers.reset),
         ("status", handlers.status),
         ("refresh", handlers.refresh),
-        ("update", handlers.update),
         ("search", handlers.search),
     ):
         application.add_handler(CommandHandler(name, handler))

@@ -5,10 +5,10 @@ import html
 import time
 from typing import Optional
 
+from structlog import get_logger
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
-from structlog import get_logger
 
 from config import settings
 from keyboards import create_type_keyboard
@@ -17,10 +17,13 @@ from message_utils import safe_edit_message as _safe_edit_message
 from pansou_client import pansou_client
 from runtime_state import (
     build_search_cache_key as _build_search_cache_key,
+)
+from runtime_state import (
     check_search_rate_limit,
     schedule_message_deletion,
     search_cache,
 )
+from search_options import validate_keyword
 from user_settings import settings_manager
 
 logger = get_logger()
@@ -74,6 +77,7 @@ async def _run_search_flow(
     force_refresh: bool = False,
     show_loading: bool = True,
 ) -> None:
+    started_at = time.monotonic()
     user_settings = settings_manager.get_settings(user_id)
 
     if limit is None:
@@ -165,16 +169,20 @@ async def _run_search_flow(
 
         logger.info(
             "search_completed",
-            keyword=keyword,
-            user_id=user_id,
+            keyword_length=len(keyword),
             total=total,
             types=list(merged_by_type.keys()),
+            duration_ms=round((time.monotonic() - started_at) * 1000, 2),
         )
     except Exception as e:
-        logger.error("search_error", error=str(e), keyword=keyword)
-        safe_error = html.escape(str(e))
+        logger.error(
+            "search_error",
+            error_type=type(e).__name__,
+            keyword_length=len(keyword),
+            duration_ms=round((time.monotonic() - started_at) * 1000, 2),
+        )
         error_text = add_auto_delete_notice(
-            f"❌ 搜索出错：{safe_error}\n\n请稍后重试或使用 /status 检查服务状态",
+            "❌ 搜索服务暂时不可用\n\n请稍后重试或使用 /status 检查服务状态",
             ParseMode.HTML,
         )
         await _safe_edit_message(edit_message, error_text, parse_mode=ParseMode.HTML)
@@ -192,6 +200,11 @@ async def perform_search(
     channels: Optional[list] = None,
     force_refresh: bool = False,
 ) -> None:
+    keyword_error = validate_keyword(keyword, settings.max_keyword_length)
+    if keyword_error:
+        await reply_with_auto_delete(update, f"⚠️ {keyword_error}")
+        return
+
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     allowed, retry_after = check_search_rate_limit(user_id)
