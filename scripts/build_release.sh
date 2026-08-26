@@ -35,6 +35,10 @@ rsync -a \
   --exclude='*.log' \
   "$source_dir/" "$candidate/"
 
+# rsync preserves the source directory mode on the destination root. Normalize
+# it so the unprivileged service account can always enter the release.
+chmod 0755 "$candidate"
+
 python3 -m venv "$candidate/.venv"
 "$candidate/.venv/bin/python" -m pip install --disable-pip-version-check -r "$candidate/requirements.txt"
 "$candidate/.venv/bin/python" -m pip check
