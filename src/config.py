@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # Pansou API 配置
     pansou_api_url: str = Field(default="http://localhost:8888", description="Pansou API 地址")
     pansou_api_token: Optional[str] = Field(default=None, description="Pansou API 认证 Token")
+
+    # 可选影视资料；留空时继续使用普通资源搜索
+    tmdb_read_access_token: Optional[str] = Field(
+        default=None, description="TMDB API Read Access Token"
+    )
+    tmdb_api_key: Optional[str] = Field(default=None, description="TMDB v3 API Key（可替代 Read Token）")
     
     # 代理配置
     http_proxy: Optional[str] = Field(default=None, description="HTTP 代理")

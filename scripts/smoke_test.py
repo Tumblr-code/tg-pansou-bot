@@ -79,7 +79,7 @@ from search_flow import _format_search_scope
 long_html = "<b>" + ("x" * 5000) + "</b>"
 safe_html = ensure_telegram_text(long_html, parse_mode="HTML")
 assert len(safe_html) < 4096
-assert "<b>" not in safe_html
+assert safe_html.startswith("<b>") and "</b>" in safe_html
 scope = _format_search_scope(
     source_type="plugin",
     cloud_types=["quark", "aliyun"],

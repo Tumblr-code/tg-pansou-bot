@@ -29,6 +29,8 @@ jobs:
           cache: pip
       - name: Install locked dependencies
         run: python -m pip install -r requirements-dev.txt
+      - name: Verify production runtime source
+        run: python scripts/verify_production_source.py
       - name: Validate tracked files for secrets
         run: python scripts/secret_scan.py
       - name: Compile and smoke import
@@ -49,3 +51,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build image
         run: docker build -t tg-pansou-bot:ci .
+
+  package:
+    name: Source release package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          python scripts/verify_production_source.py
+          python scripts/secret_scan.py
+          python scripts/package_release.py --version v1.0.0
+          python scripts/verify_release.py dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tg-pansou-bot-source-${{ github.sha }}
+          path: dist/*

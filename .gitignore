@@ -56,3 +56,7 @@ data/
 
 # Bot specific
 bot.log
+
+# Release artifacts and isolated verification
+dist/
+.release-check/

@@ -1,0 +1,33 @@
+name: Release
+on:
+  release:
+    types: [published]
+permissions:
+  contents: write
+jobs:
+  release:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify and package final source
+        run: |
+          pip install -r requirements-dev.txt
+          python scripts/verify_production_source.py
+          python scripts/secret_scan.py
+          ruff check .
+          pytest -q
+          python scripts/smoke_test.py
+          python -m pip check
+          python scripts/package_release.py --version "$RELEASE_TAG"
+          python scripts/verify_release.py dist
+      - name: Upload release assets
+        run: gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/PROVENANCE.json dist/SHA256SUMS
