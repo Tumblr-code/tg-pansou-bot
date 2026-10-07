@@ -12,6 +12,7 @@ from telegram.ext import ContextTypes
 
 from config import settings
 from keyboards import create_type_keyboard
+from media_search import start_media_search
 from message_utils import add_auto_delete_notice, reply_with_auto_delete
 from message_utils import safe_edit_message as _safe_edit_message
 from pansou_client import pansou_client
@@ -217,22 +218,14 @@ async def perform_search(
         parse_mode=ParseMode.HTML,
     )
 
-    async def _edit_message(text: str, **kwargs):
-        return await search_message.edit_text(text, **kwargs)
-
-    await _run_search_flow(
-        keyword=keyword,
-        user_id=user_id,
-        chat_id=chat_id,
-        edit_message=_edit_message,
+    await start_media_search(
+        context.bot,
+        keyword=keyword, user_id=user_id, chat_id=chat_id,
         message_id=search_message.message_id,
-        limit=limit,
-        cloud_types=cloud_types,
-        source_type=source_type,
-        plugins=plugins,
-        channels=channels,
+        message_thread_id=getattr(search_message, "message_thread_id", None),
+        options={"limit": limit, "cloud_types": cloud_types, "source_type": source_type,
+                 "plugins": plugins, "channels": channels},
         force_refresh=force_refresh,
-        show_loading=False,
     )
 
 

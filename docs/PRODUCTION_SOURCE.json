@@ -1,0 +1,28 @@
+{
+  "files": {
+    "main.py": "6858cc3879e1f9d9c86b095018d4ac4a8a786b0df1fb1bc20fd08e08665a013f",
+    "requirements.txt": "b3d2e3014f85ea7110032b73ef2cff8c6f183770bf45278d2c627f4aa0e27274",
+    "src/application_factory.py": "9085fd25dce818354f5bb463559cdaefbea1d0c3b62e46cb7c1a6ad0bb415c2e",
+    "src/bot.py": "151e1b96e66f17edf0f5e9ea7e8843028fe068f74c66250f00b589bb3d7fd48c",
+    "src/bot_config.py": "a3cd952e790be56a2a0fae5c70e476de2cab389b4f946e78be2512ab4855c008",
+    "src/config.py": "98de28a2d6eb7ff69e6f17f483088449074c178d3e2fc4189ef659f7c61c2baa",
+    "src/keyboards.py": "d137cb80fe14317719c3a899e50f0bcecccdd74b46f1c8ba3cce99a1ee9a178f",
+    "src/logger.py": "6f522d617e9f9105c19cb6b36fac948d026616f29b20d41a51deba361dac75c0",
+    "src/magnet_links.py": "88f1aec50756d88f6b5b706370b638706c5190c816d988244b26ca7816120458",
+    "src/media_search.py": "c1beefd8377d6096db1154b353b9bf54c668dd16b9728696120ddaf9d307d943",
+    "src/media_views.py": "885a5ed61dd06b264cda8ea8e7c6ca8c71f2d5da9ac87b8a0019523428752b9d",
+    "src/message_utils.py": "f95ef5ecb2917c2a39a4f7771d37efbd651210dde8ec9a14ac5ce62e48b3e151",
+    "src/pansou_client.py": "7ab57af3e32cd89bfa8d3fd18ec50f6ebf7bba8776eb1f1d98057bfe2078b71a",
+    "src/runtime_state.py": "b6bcbc13c809118300ff8ed601dda5834fc67a5e992a8c0e250cb23f07f9d45d",
+    "src/search_flow.py": "818db8ed474800c49ab68da5bd59757bf659211be8bd0dff3b326aec2af49d20",
+    "src/search_options.py": "2fd41b128c2bf55dee3a072a3fce9e94cd4e5333cf2c3a74fe91891963abe8c6",
+    "src/tmdb_client.py": "6ac7bf097c6c343250ff1ede649f4bb2d845cb2e430374eed3acae5982915450",
+    "src/user_settings.py": "dfcbc2384c2f457015fed48850b367a5ed1c48d97f26a2cdc9eaccd8f41cc4e9"
+  },
+  "production_release": "20260915T145702Z-b51171327d99",
+  "runtime_kind": "python",
+  "schema": 1,
+  "source_origin": "allowlisted production source snapshot; no matching Git commit",
+  "source_revision": null,
+  "verified_on": "2026-10-07"
+}

@@ -1,95 +1,61 @@
-# TG Pansou Bot
+# TG PanSou Bot
 
-基于 Telegram 与 [PanSou](https://github.com/fish2018/pansou) 的网盘搜索机器人。运行接口只有 Telegram long polling；项目不提供 HTTP API，也不包含在线自更新命令。
+[English](README.en.md) · [安装与运维](docs/OPERATIONS.zh-CN.md) · [贡献](CONTRIBUTING.md) · [安全](SECURITY.md)
 
-## 功能
+通过 Telegram long polling 使用 [PanSou](https://github.com/Tumblr-code/pansou) 搜索资源。支持私聊/群聊、网盘分类、分页、刷新、可选 TMDB 影视信息，以及由搜索本人领取完整磁力链接。项目没有 HTTP API，也没有在线自更新命令。
 
-- `/search 关键词`：私聊或群聊搜索
-- `/s 关键词`：群聊短命令
-- 按网盘分类、分页、刷新和显示全部
-- 管理员可管理来源、插件、频道、过滤器和个人设置
-- 120 秒结果缓存与相同请求合并
-- 最多 4 个上游搜索并发，排队默认最多 8 秒
-- 用户设置以原子 JSON 文件保存，损坏或未知结构会隔离而不是覆盖
-- JSON 结构化日志，不记录原始搜索词、Telegram 用户 ID、完整 Update 或令牌
+## v1.0.0 生产基线
 
-## 运行要求
+本版归档 2026-10-07 只读核验的在线 release `20260915T145702Z-b51171327d99`。运行目录没有 `.git`，该后缀不当作已证明的 Git SHA；历史 main 缺少的 TMDB、影视视图、磁力模块和线上修复已按源码白名单补齐。逐文件证据见 [PRODUCTION_SOURCE.json](docs/PRODUCTION_SOURCE.json)，不包含 `.env`、用户设置或令牌。
 
-- Python 3.11 或 3.12
-- 已运行的 PanSou API，默认 `http://127.0.0.1:8888`
-- Telegram Bot Token
+本轮只同步源码、文档、CI 和发行附件，**没有部署、重启或发送客户消息**。仓库当前未声明项目许可证，本次不擅自添加 MIT 或其他授权；PanSou 后端的 MIT 不等于本 Bot 的授权。依赖继续遵循各自许可证。
 
-## 配置
+## 安装
 
-复制示例后填写私密值；不要提交 `.env`。
+需要 Python 3.11/3.12、Telegram Bot Token 和可访问的 PanSou API。下载并校验 [Release](https://github.com/Tumblr-code/tg-pansou-bot/releases) 附件：
 
 ```bash
-cp .env.example .env
+sha256sum -c SHA256SUMS
+tar -xzf tg-pansou-bot-v1.0.0-source.tar.gz
+cd tg-pansou-bot-v1.0.0-source
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
+cp .env.example .env
+# 用编辑器填写自己的私密值，再启动：
 .venv/bin/python main.py
 ```
 
-主要配置：
+新装 systemd、专用用户、升级/回退、备份恢复见[双语教程](docs/OPERATIONS.zh-CN.md)。真实 Token 不进入 Git、镜像或命令历史。同一 Token 只能运行一个 polling 实例，不能用生产 Token 启动候选来测试。
 
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `TG_BOT_TOKEN` | 必填 | Telegram Bot Token |
-| `PANSOU_API_URL` | `http://localhost:8888` | PanSou API 地址 |
-| `PANSOU_API_TOKEN` | 空 | PanSou Bearer Token |
-| `DATA_DIR` | `./data` | 用户设置目录；生产建议 `/var/lib/tg-pansou-bot` |
-| `APP_VERSION` | `dev` | `/status` 显示的只读发布版本 |
-| `DROP_PENDING_UPDATES` | `false` | 正常重启时保留 pending updates |
-| `MAX_CONCURRENT_SEARCHES` | `4` | 上游搜索并发上限 |
-| `SEARCH_QUEUE_TIMEOUT` | `8` | 搜索排队超时（秒） |
-| `MAX_KEYWORD_LENGTH` | `128` | 搜索关键词最大字符数；最小为 2 |
-| `SEARCH_TIMEOUT` | `30` | 上游 HTTP read 超时（秒） |
-| `LOG_LEVEL` | `INFO` | `DEBUG/INFO/WARNING/ERROR/CRITICAL` |
-| `ADMIN_IDS` | 空 | 逗号分隔的 Telegram 管理员数字 ID |
+## 配置与命令
 
-HTTPX 对 PanSou 使用 connect/pool 5 秒、write 10 秒和 `SEARCH_TIMEOUT` read 超时。
+| 变量 | 默认值/作用 |
+|---|---|
+| `TG_BOT_TOKEN` | 必填，私有 Token |
+| `PANSOU_API_URL` | `http://localhost:8888` |
+| `PANSOU_API_TOKEN` | 可选后端 Bearer Token |
+| `DATA_DIR` | `./data`；生产建议 `/var/lib/tg-pansou-bot` |
+| `APP_VERSION` | `dev`；部署时设为发行版本/提交 |
+| `DROP_PENDING_UPDATES` | `false`，保留待处理 updates |
+| `MAX_CONCURRENT_SEARCHES` / `SEARCH_QUEUE_TIMEOUT` | `4` / `8` 秒 |
+| `SEARCH_TIMEOUT` / `MAX_KEYWORD_LENGTH` | `30` 秒 / `128` 字符 |
+| `ADMIN_IDS` | 逗号分隔管理员数字 ID |
+| `TMDB_READ_ACCESS_TOKEN` / `TMDB_API_KEY` | 可选，留空保持普通资源搜索 |
+| `HTTP_PROXY` / `HTTPS_PROXY` | 可选出口代理 |
 
-## 搜索与管理命令
+更多示例见 [.env.example](.env.example)。使用 `/search 关键词` 或 `/s 关键词` 搜索；来源、插件、频道、过滤及设置管理保留原管理员限制。磁力取回校验原搜索用户和当前结果版本；超长链接以文本文件返回，不截断 URI。默认 JSON 日志屏蔽 Token/Bearer/API key，不输出原始搜索词或用户 ID。
 
-```text
-/search 三体
-/search 三体 --src plugin --types quark,aliyun --plugins panta --limit 5 --refresh
-/s 三体
-/status
-/sources
-/plugins
-/channels
-/settings
-/filter
-/reset
-/refresh
-```
-
-普通用户保留搜索、分类、分页和刷新结果能力；来源和设置命令继续受现有管理员权限控制。
-
-## 开发验证
+## 开发与发布
 
 ```bash
-python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python scripts/verify_production_source.py
+.venv/bin/python scripts/secret_scan.py
 .venv/bin/ruff check .
 .venv/bin/pytest -q
-.venv/bin/python scripts/secret_scan.py
 .venv/bin/python scripts/smoke_test.py
 .venv/bin/python -m pip check
-docker build -t tg-pansou-bot:local .
+.venv/bin/python scripts/package_release.py --version v1.0.0
 ```
 
-Secret scan 只读取 Git 已跟踪或已暂存文件，不会扫描未跟踪的生产 `.env`、`data/` 或虚拟环境。
-
-## 生产部署
-
-生产使用专用 `tgpansou` 用户、只读 release 目录、`/opt/tg-pansou-bot/current` 与 `previous` 原子链接，并将状态放在 `/var/lib/tg-pansou-bot`。完整安装、切换、验证与回滚流程见 [DEPLOY.md](DEPLOY.md)。
-
-Docker 仅用于开发或独立部署：
-
-```bash
-docker compose up -d --build
-```
-
-Compose 默认以非 root、只读根文件系统和空 capability 集运行，状态写入 `./data`。
+发布包仅含 Git 白名单应用源码、模板、文档、来源清单与校验和，不附带解释器、虚拟环境、私有数据或令牌。直接依赖版本保留生产声明，安装时仍需取得相应依赖；发行包不是离线 wheel 仓。CI 使用模拟数据和网络客户端，不执行真实 Telegram 通知。

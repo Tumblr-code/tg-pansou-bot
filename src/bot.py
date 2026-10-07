@@ -5,7 +5,7 @@ Telegram Bot 主模块 - 支持分类按钮
 import html
 
 from structlog import get_logger
-from telegram import BotCommand, Update
+from telegram import BotCommand, InputFile, Message, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
@@ -18,7 +18,7 @@ from keyboards import (
     create_type_keyboard,
 )
 from keyboards import (
-    is_cache_owner as _is_cache_owner,
+    is_cache_owner as _legacy_is_cache_owner,
 )
 from keyboards import (
     parse_cache_key_from_action as _parse_cache_key_from_action,
@@ -27,6 +27,14 @@ from keyboards import (
     parse_type_callback as _parse_type_callback,
 )
 from logger import setup_logging
+from magnet_links import (
+    MAGNET_START_PREFIX,
+    is_magnet_url,
+    magnet_uri_digest,
+    parse_magnet_callback,
+    parse_magnet_start_payload,
+)
+from media_search import handle_media_callback
 from message_utils import (
     add_auto_delete_notice,
     ensure_telegram_text,
@@ -67,6 +75,7 @@ from search_options import (
 from search_options import (
     validate_values as _validate_values,
 )
+from tmdb_client import tmdb_client
 from user_settings import CLOUD_TYPE_NAMES as SETTINGS_CLOUD_NAMES
 from user_settings import settings_manager
 
@@ -87,6 +96,13 @@ BOT_COMMANDS = [
     BotCommand("refresh", "刷新运行时缓存"),
 ]
 
+def _is_cache_owner(cache_key, chat_id, user_id, message_id=None):
+    cached = search_cache.get(cache_key)
+    if cached and "view_revision" in cached:
+        return False  # Versioned searches must use the active-message callback path.
+    return _legacy_is_cache_owner(cache_key, chat_id, user_id, message_id)
+
+
 # ============ 权限检查 ============
 
 def is_admin(user_id: int) -> bool:
@@ -104,8 +120,71 @@ def check_admin_permission(update: Update) -> bool:
 
 # ============ 命令处理函数 ============
 
+def _get_cached_magnet(
+    cache_key: str, type_index: int, item_index: int,
+) -> tuple[str | None, str | None]:
+    cached_data = search_cache.get(cache_key)
+    if not cached_data:
+        return None, "⚠️ 搜索结果已过期，请重新搜索"
+    result_types = list(cached_data["results"].get("merged_by_type", {}).values())
+    if type_index >= len(result_types) or item_index >= len(result_types[type_index]):
+        return None, "❌ 该资源不可用，请重新搜索"
+    url = result_types[type_index][item_index].get("url", "")
+    if not is_magnet_url(url):
+        return None, "❌ 该资源不是磁力链接"
+    return url, None
+
+
+async def _reply_complete_magnet(message: Message, url: str, item_index: int) -> None:
+    # Telegram limits visible UTF-16 units, not escaped HTML source length.
+    # Reserve room for the heading and expiry notice; never truncate the URI.
+    if len(url.encode("utf-16-le")) // 2 <= 3900:
+        text = add_auto_delete_notice(
+            f"🧲 完整磁力 {item_index + 1}（长按复制后粘贴到下载器）\n\n"
+            f"<code>{html.escape(url)}</code>",
+            ParseMode.HTML,
+        )
+        sent = await message.reply_text(
+            text, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+        )
+    else:
+        sent = await message.reply_document(
+            document=InputFile(url.encode("utf-8"), filename=f"magnet-{item_index + 1}.txt"),
+            caption="🧲 完整磁力保存在 UTF-8 文本文件中，可复制到下载器。\n⏰ 3 分钟后自动删除",
+        )
+    auto_delete_message(sent)
+
+
+async def _handle_magnet_start(update: Update, args: list[str]) -> None:
+    cache_key, type_index, item_index, digest = parse_magnet_start_payload(args[0])
+    if len(args) != 1 or not cache_key or type_index is None or item_index is None:
+        await reply_with_auto_delete(update, "❌ 磁力链接参数错误，请重新搜索")
+        return
+    user_id = update.effective_user.id
+    # A group search may open a private chat, but may only be redeemed by its owner.
+    if (
+        update.effective_chat.type != "private"
+        or update.effective_chat.id != user_id
+        or int(cache_key.split(":")[1]) != user_id
+    ):
+        await reply_with_auto_delete(update, "⚠️ 请由搜索本人在机器人私聊中获取磁力")
+        return
+    url, error = _get_cached_magnet(cache_key, type_index, item_index)
+    if error:
+        await reply_with_auto_delete(update, error)
+        return
+    if magnet_uri_digest(url) != digest:
+        await reply_with_auto_delete(update, "⚠️ 搜索结果已更新，请重新搜索后获取磁力")
+        return
+    await _reply_complete_magnet(update.effective_message, url, item_index)
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理 /start 命令"""
+    args = getattr(context, "args", None) or []
+    if args and args[0].startswith(MAGNET_START_PREFIX):
+        await _handle_magnet_start(update, args)
+        return
     user = update.effective_user
     is_user_admin = is_admin(user.id)
     safe_first_name = html.escape(user.first_name or "朋友")
@@ -704,8 +783,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not data:
         return
 
+    if await handle_media_callback(update, context):
+        return
+
     if data == "noop":
-        await query.answer("正在重新搜索...")
+        await query.answer()
         return
     
     user_id = update.effective_user.id
@@ -714,7 +796,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if message_id is None:
         await query.answer("❌ 搜索消息不可用", show_alert=True)
         return
-    
+
+    if data.startswith("magnet:"):
+        cache_key, type_index, item_index = parse_magnet_callback(data)
+        if not cache_key or type_index is None or item_index is None:
+            await query.answer("❌ 参数错误", show_alert=True)
+            return
+        if len(cache_key.split(":")) != 3 or not _is_cache_owner(
+            cache_key, chat_id, user_id, message_id,
+        ):
+            await query.answer("⚠️ 只能操作你自己发起的搜索", show_alert=True)
+            return
+        url, error = _get_cached_magnet(cache_key, type_index, item_index)
+        if error:
+            await query.answer(error, show_alert=True)
+            return
+        await query.answer("正在获取完整磁力…")
+        await _reply_complete_magnet(query.message, url, item_index)
+        return
+
     # 处理刷新
     if data.startswith("refresh:"):
         cache_key = _parse_cache_key_from_action(data, "refresh:")
@@ -780,7 +880,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         user_settings = settings_manager.get_settings(user_id)
         per_type_limit = max(1, min(user_settings.result_limit, settings.max_result_limit))
-        formatted_text = pansou_client.format_results(results, keyword, per_type_limit=per_type_limit)
+        formatted_text = pansou_client.format_results(
+            results, keyword, per_type_limit=per_type_limit,
+            cache_key=cache_key, bot_username=context.bot.username,
+        )
         formatted_text = add_auto_delete_notice(formatted_text, ParseMode.HTML)
         
         formatted_text = ensure_telegram_text(formatted_text, parse_mode=ParseMode.HTML)
@@ -870,13 +973,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         # 格式化该类型的结果
         formatted_text = pansou_client.format_type_results(
-            results, keyword, cloud_type, page, per_page
+            results, keyword, cloud_type, page, per_page,
+            cache_key=cache_key, bot_username=context.bot.username,
         )
         # 添加自动删除提示
         formatted_text = add_auto_delete_notice(formatted_text, ParseMode.HTML)
         
         # 创建分页键盘
-        keyboard = create_pagination_keyboard(cache_key, cloud_type, page, total_pages)
+        keyboard = create_pagination_keyboard(
+            cache_key, cloud_type, page, total_pages,
+        )
         
         await _safe_edit_message(
             query.edit_message_text,
@@ -937,6 +1043,7 @@ async def _post_shutdown(application) -> None:
     """Release shared clients and background tasks after polling stops."""
     await shutdown_runtime_state()
     await pansou_client.close()
+    await tmdb_client.close()
     logger.info("bot_stopped", app_version=settings.app_version)
 
 

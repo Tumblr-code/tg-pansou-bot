@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import html
 import re
+from html.parser import HTMLParser
 from typing import Optional
 
 from structlog import get_logger
@@ -23,17 +24,69 @@ def _strip_html_tags(text: str) -> str:
     return re.sub(r"<[^>]*>", "", text)
 
 
+def _utf16_length(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _truncate_utf16(text: str, limit: int) -> str:
+    return text.encode("utf-16-le")[:limit * 2].decode("utf-16-le", errors="ignore")
+
+
+class _HTMLTextLimiter(HTMLParser):
+    """Limit displayed text while keeping links and formatting properly closed."""
+
+    def __init__(self, limit: int):
+        super().__init__(convert_charrefs=True)
+        self.remaining = limit
+        self.parts: list[str] = []
+        self.open_tags: list[str] = []
+        self.truncated = False
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if self.truncated:
+            return
+        self.parts.append(self.get_starttag_text())
+        if tag not in {"br", "hr", "img", "input", "meta", "link"}:
+            self.open_tags.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.truncated:
+            return
+        self.parts.append(f"</{tag}>")
+        if self.open_tags and self.open_tags[-1] == tag:
+            self.open_tags.pop()
+
+    def handle_startendtag(self, tag: str, attrs) -> None:
+        if not self.truncated:
+            self.parts.append(self.get_starttag_text())
+
+    def handle_data(self, data: str) -> None:
+        if self.truncated:
+            return
+        kept = _truncate_utf16(data, self.remaining)
+        self.parts.append(html.escape(kept, quote=False))
+        self.remaining -= _utf16_length(kept)
+        self.truncated = len(kept) != len(data)
+
+    def result(self) -> str:
+        return "".join(self.parts) + "".join(f"</{tag}>" for tag in reversed(self.open_tags))
+
+
 def ensure_telegram_text(text: str, parse_mode: Optional[str] = None) -> str:
     """Return text that fits Telegram limits without leaving broken HTML."""
-    if len(text) <= MAX_TELEGRAM_TEXT:
+    is_html = parse_mode == ParseMode.HTML
+    visible_text = html.unescape(_strip_html_tags(text)) if is_html else text
+    if _utf16_length(visible_text) <= MAX_TELEGRAM_TEXT:
         return text
 
     suffix = "\n\n...（内容过长已截断）"
-    limit = SAFE_TEXT_LIMIT - len(suffix)
-    if parse_mode == ParseMode.HTML:
-        plain = html.unescape(_strip_html_tags(text))
-        return html.escape(plain[:limit].rstrip()) + suffix
-    return text[:limit].rstrip() + suffix
+    limit = SAFE_TEXT_LIMIT - _utf16_length(suffix)
+    if is_html:
+        limiter = _HTMLTextLimiter(limit)
+        limiter.feed(text)
+        limiter.close()
+        return limiter.result() + suffix
+    return _truncate_utf16(text, limit).rstrip() + suffix
 
 
 def add_auto_delete_notice(text: str, parse_mode: Optional[str] = None) -> str:

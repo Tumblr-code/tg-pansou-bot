@@ -108,3 +108,33 @@ async def test_client_rejects_keyword_boundaries_before_network() -> None:
     assert (await client.search("a"))["error_code"] == "INVALID_KEYWORD"
     assert (await client.search("x" * (settings.max_keyword_length + 1)))["error_code"] == "INVALID_KEYWORD"
     await client.close()
+
+
+@pytest.mark.parametrize("view", ["type", "all"])
+def test_long_magnets_use_result_actions_without_destroying_http_links(view) -> None:
+    from message_utils import ensure_telegram_text
+
+    client = fresh_client()
+    magnet = "magnet:?xt=urn:btih:" + "a" * 40 + "&tr=https://tracker.test/" + "x" * 900
+    links = [{"url": magnet, "note": f"资源 {index}"} for index in range(5)]
+    links.append({"url": "https://example.test/file?a=1&b=2", "note": "网页资源"})
+    results = {"total": len(links), "merged_by_type": {"magnet": links}}
+
+    if view == "type":
+        text = client.format_type_results(
+            results, "测试", "magnet", per_page=6,
+            cache_key="-1001:2002:3003", bot_username="ExampleSearch_bot",
+        )
+    else:
+        text = client.format_results(
+            results, "测试", per_type_limit=6,
+            cache_key="-1001:2002:3003", bot_username="ExampleSearch_bot",
+        )
+    text = ensure_telegram_text(text, parse_mode="HTML")
+
+    assert 'href="magnet:' not in text
+    assert text.count('>获取磁力</a>') == 5
+    assert text.count('href="https://t.me/ExampleSearch_bot?start=') == 5
+    assert "复制到下载器" in text
+    assert 'href="https://example.test/file?a=1&amp;b=2"' in text
+    assert "内容过长已截断" not in text

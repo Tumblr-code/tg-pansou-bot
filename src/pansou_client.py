@@ -15,6 +15,7 @@ import httpx
 from structlog import get_logger
 
 from config import settings
+from magnet_links import build_magnet_deep_link, is_magnet_url
 
 logger = get_logger()
 
@@ -696,11 +697,17 @@ class PansouClient:
         """转义 HTML 输出，避免 Telegram HTML 解析报错或被注入。"""
         return html.escape(self._clean_text(text))
 
-    def _format_link_html(self, url: Any, label: str = "打开链接") -> str:
+    def _format_link_html(
+        self, url: Any, label: str = "打开链接", *, magnet_link: str | None = None,
+    ) -> str:
         """把长链接压缩为 Telegram HTML 可点击链接。"""
         clean_url = self._clean_text(url)
         if not clean_url:
             return ""
+        if is_magnet_url(clean_url):
+            if not magnet_link:
+                return "磁力链接（请重新搜索）"
+            return f'<a href="{html.escape(magnet_link, quote=True)}">获取磁力</a>'
         escaped_url = html.escape(clean_url, quote=True)
         return f'<a href="{escaped_url}">{self._escape_html(label)}</a>'
 
@@ -793,7 +800,10 @@ class PansouClient:
         keyword: str, 
         cloud_type: str,
         page: int = 1,
-        per_page: int = 5
+        per_page: int = 5,
+        *,
+        cache_key: str | None = None,
+        bot_username: str | None = None,
     ) -> str:
         """
         格式化指定网盘类型的结果
@@ -831,6 +841,7 @@ class PansouClient:
             f"📊 共 {len(links)} 条结果 (第{page}/{total_pages}页)\n"
         ]
         
+        type_index = list(merged_by_type).index(cloud_type)
         for i, link in enumerate(page_links, start + 1):
             url = link.get("url", "")
             password = link.get("password", "")
@@ -838,7 +849,11 @@ class PansouClient:
             source = link.get("source", "")
             
             clean_note = self._escape_html(note) if note else "无标题"
-            clean_link = self._format_link_html(url)
+            magnet_link = (
+                build_magnet_deep_link(bot_username, cache_key, type_index, i - 1, url)
+                if is_magnet_url(url) and cache_key and bot_username else None
+            )
+            clean_link = self._format_link_html(url, magnet_link=magnet_link)
             clean_source = self._escape_html(source) if source else ""
             clean_password = self._escape_html(password) if password else ""
 
@@ -852,11 +867,17 @@ class PansouClient:
             lines.append("")  # 空行分隔
         
         lines.append("─────────────")
-        lines.append("💡 提示: 点击“打开链接”访问资源，密码可长按复制")
+        if any(is_magnet_url(link.get("url")) for link in page_links):
+            lines.append("💡 点击“获取磁力”在机器人私聊取完整链接，再复制到下载器。")
+        else:
+            lines.append("💡 提示: 点击“打开链接”访问资源，密码可长按复制")
         
         return "\n".join(lines)
     
-    def format_results(self, results: Dict[str, Any], keyword: str, per_type_limit: int = 5) -> str:
+    def format_results(
+        self, results: Dict[str, Any], keyword: str, per_type_limit: int = 5,
+        *, cache_key: str | None = None, bot_username: str | None = None,
+    ) -> str:
         """
         格式化所有搜索结果（备用，显示所有结果）
         """
@@ -874,7 +895,7 @@ class PansouClient:
             f"📊 共找到 {total} 条结果\n"
         ]
         
-        for cloud_type, links in merged_by_type.items():
+        for type_index, (cloud_type, links) in enumerate(merged_by_type.items()):
             if not links:
                 continue
             
@@ -888,7 +909,11 @@ class PansouClient:
                 source = link.get("source", "")
                 
                 clean_note = self._escape_html(note) if note else "无标题"
-                clean_link = self._format_link_html(url)
+                magnet_link = (
+                    build_magnet_deep_link(bot_username, cache_key, type_index, i - 1, url)
+                    if is_magnet_url(url) and cache_key and bot_username else None
+                )
+                clean_link = self._format_link_html(url, magnet_link=magnet_link)
                 clean_source = self._escape_html(source) if source else ""
                 clean_password = self._escape_html(password) if password else ""
 
@@ -901,7 +926,14 @@ class PansouClient:
                     lines.append(f"   📌 来源: {clean_source}")
         
         lines.append("\n─────────────")
-        lines.append("💡 提示: 长按链接可复制，密码可手动复制")
+        if any(
+            is_magnet_url(link.get("url"))
+            for links in merged_by_type.values()
+            for link in links[:per_type_limit]
+        ):
+            lines.append("💡 点击“获取磁力”在机器人私聊取完整链接，再复制到下载器。")
+        else:
+            lines.append("💡 提示: 长按链接可复制，密码可手动复制")
         
         return "\n".join(lines)
 

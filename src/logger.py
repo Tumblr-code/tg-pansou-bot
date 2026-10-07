@@ -11,11 +11,13 @@ from structlog.stdlib import LoggerFactory, ProcessorFormatter
 from config import settings
 
 TOKEN_PATTERN = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b")
+API_KEY_QUERY_PATTERN = re.compile(r"(?i)([?&]api_key=)[^&\s\"\']+")
 BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]+=*\b")
 
 
 def _redact_value(value: Any) -> Any:
     if isinstance(value, str):
+        value = API_KEY_QUERY_PATTERN.sub(r"\1[REDACTED]", value)
         value = TOKEN_PATTERN.sub("[REDACTED_TELEGRAM_TOKEN]", value)
         return BEARER_PATTERN.sub("Bearer [REDACTED]", value)
     if isinstance(value, dict):

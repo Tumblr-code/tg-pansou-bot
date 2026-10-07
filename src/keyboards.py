@@ -5,22 +5,6 @@ from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-AD_LINKS = (
-    ("🤖 店铺助手", "https://t.me/NexaStoreRobot"),
-    ("📢 频道", "https://t.me/NexaStoreChannel"),
-    ("💬 群组", "https://t.me/NexaStoreGroup"),
-)
-
-
-def create_ad_button_rows() -> list[list[InlineKeyboardButton]]:
-    return [
-        [InlineKeyboardButton(AD_LINKS[0][0], url=AD_LINKS[0][1])],
-        [
-            InlineKeyboardButton(AD_LINKS[1][0], url=AD_LINKS[1][1]),
-            InlineKeyboardButton(AD_LINKS[2][0], url=AD_LINKS[2][1]),
-        ],
-    ]
-
 
 def create_type_keyboard(type_buttons: list, cache_key: str, page: int = 1) -> InlineKeyboardMarkup:
     buttons = []
@@ -44,7 +28,6 @@ def create_type_keyboard(type_buttons: list, cache_key: str, page: int = 1) -> I
         InlineKeyboardButton("🔄 重新搜索", callback_data=f"refresh:{cache_key}"),
         InlineKeyboardButton("📊 显示全部", callback_data=f"all:{cache_key}"),
     ])
-    buttons.extend(create_ad_button_rows())
     return InlineKeyboardMarkup(buttons)
 
 
@@ -98,6 +81,7 @@ def create_pagination_keyboard(
     cloud_type: str,
     current_page: int,
     total_pages: int,
+    result_buttons: Optional[list[list[InlineKeyboardButton]]] = None,
 ) -> InlineKeyboardMarkup:
     nav_buttons = []
     if current_page > 1:
@@ -119,20 +103,25 @@ def create_pagination_keyboard(
         )
 
     buttons = [
+        *(result_buttons or []),
         nav_buttons,
         [
             InlineKeyboardButton("🔙 返回分类", callback_data=f"back:{cache_key}"),
             InlineKeyboardButton("🔄 重新搜索", callback_data=f"refresh:{cache_key}"),
         ],
     ]
-    buttons.extend(create_ad_button_rows())
     return InlineKeyboardMarkup(buttons)
 
 
-def create_all_results_keyboard(cache_key: str) -> InlineKeyboardMarkup:
-    buttons = [[
-        InlineKeyboardButton("🔙 返回分类", callback_data=f"back:{cache_key}"),
-        InlineKeyboardButton("🔄 重新搜索", callback_data=f"refresh:{cache_key}"),
-    ]]
-    buttons.extend(create_ad_button_rows())
+def create_all_results_keyboard(
+    cache_key: str,
+    result_buttons: Optional[list[list[InlineKeyboardButton]]] = None,
+) -> InlineKeyboardMarkup:
+    buttons = [
+        *(result_buttons or []),
+        [
+            InlineKeyboardButton("🔙 返回分类", callback_data=f"back:{cache_key}"),
+            InlineKeyboardButton("🔄 重新搜索", callback_data=f"refresh:{cache_key}"),
+        ],
+    ]
     return InlineKeyboardMarkup(buttons)
